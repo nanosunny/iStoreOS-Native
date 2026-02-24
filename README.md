@@ -29,12 +29,12 @@
 > 使用此仓库必须设置机密token，Actions云编译固件时需要用到，通常在仓库设置里面。机密键名为 **`GH_TOKEN`**（严禁在仓库可视代码中填写，否则后果自负）
 
 ## 😅 第三方插件 [![](https://img.shields.io/badge/-第三方插件-FFFFFF.svg)](#-第三方插件-)
-| 插件                     |  状态   | 源码地址                                                                  | 备注         |
-|:------------------------:|:------:| ------------------------------------------------------------------------- | ------------ |
-| ramfree释放内存           |  ✅   | [sbwml/openwrt_pkgs](https://github.com/sbwml/openwrt_pkgs)               | 🟢 已测试    |
-| FileBrowser文件浏览器     |  ✅   | [sbwml/openwrt_pkgs](https://github.com/sbwml/openwrt_pkgs)               | 🟢 已测试    |
-| adguardhome              |  ✅   | [w9315273/adguardhome](https://github.com/w9315273/luci-app-adguardhome) ; [sirpdboy/adguardhome](https://github.com/sirpdboy/luci-app-adguardhome) | 🟢 已测试     |
-| 其他                     |  ⏳   |                                                                           |               |
+| 插件                     |  状态   | 源码地址                                                                    | 备注         |
+|:------------------------:|:------:| ---------------------------------------------------------------------------- | ------------ |
+| ramfree释放内存           |  ✅   | [Kwonelee/openwrt-packages](https://github.com/Kwonelee/openwrt-packages)    | 🟢 已测试    |
+| FileBrowser文件浏览器     |  ✅   | [Kwonelee/openwrt-packages](https://github.com/Kwonelee/openwrt-packages)    | 🟢 已测试    |
+| adguardhome              |  ✅   | [w9315273/adguardhome](https://github.com/w9315273/luci-app-adguardhome)      | 🟢 已测试     |
+| 其他                     |  ⏳   |                                                                                |               |
 
 ✅ 支持 - ⏳ 计划中 - ⭕ 不支持
 
