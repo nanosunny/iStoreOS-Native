@@ -144,6 +144,16 @@ $(call Device/Legacy/rk3566,$(1))
 endef
 TARGET_DEVICES += jp_jp-tvbox
 
+define Device/panther_panther-x2
+$(call Device/Legacy/rk3566,$(1))
+  DEVICE_VENDOR := Panther
+  DEVICE_MODEL := panther-x2
+  DEVICE_DTS := rk3568/rk3566-panther-x2
+  SUPPORTED_DEVICES += panther,panther-x2
+  DEVICE_PACKAGES += kmod-scsi-core
+endef
+TARGET_DEVICES += panther_panther-x2
+
 define Device/friendlyarm_nanopi-r5c
 $(call Device/Legacy/rk3568,$(1))
   DEVICE_VENDOR := FriendlyARM
