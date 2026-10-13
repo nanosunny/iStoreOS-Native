@@ -25,7 +25,8 @@ git clone https://github.com/sbwml/packages_lang_golang -b 26.x feeds/packages/l
 
 # node - prebuilt
 rm -rf feeds/packages/lang/node
-git clone https://github.com/sbwml/feeds_packages_lang_node feeds/packages/lang/node -b packages-24.10
+OPENWRT_RELEASE=$(sed -n 's|.*releases/\([0-9]*\.[0-9]*\).*|\1|p' include/version.mk | head -1)
+git clone https://github.com/sbwml/feeds_packages_lang_node feeds/packages/lang/node -b packages-${OPENWRT_RELEASE:-25.12}
 
 # zerotier
 rm -rf feeds/packages/net/zerotier

@@ -24,7 +24,7 @@ jobs:
     strategy:
       matrix:
         REPO_BRANCH:
-          - istoreos-24.10
+          - istoreos-25.12
         ARCHITECTURE:
           - armv8
         os:
