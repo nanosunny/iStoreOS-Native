@@ -50,6 +50,7 @@
 |-------------|:---------:| ----------------------------------------------------------------------- |:----------------------------:|
 | tvi3315a    |    ✅    | istoreos-rockchip-armv8-tvi_tvi3315a-squashfs-sysupgrade.img.gz         | 🟢 已测试                    |
 | jp-tvbox    |    ✅    | istoreos-rockchip-armv8-jp_jp-tvbox-squashfs-sysupgrade.img.gz          | 🟢 已测试                    |
+| g68-plus    |    ✅    | istoreos-rockchip-armv8-nsy_g68-plus-squashfs-sysupgrade.img.gz         | 🟡 未测试                    |
 | 其他        |    ⏳    |                                                                          |                              |
 
 ✅ 支持 - ⏳ 计划中 - ⭕ 不支持
