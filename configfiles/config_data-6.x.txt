@@ -1,6 +1,8 @@
 CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_tvi_tvi3315a=y
 CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_jp_jp-tvbox=y
 CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_panther_panther-x2=y
+CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_nsy_g68-plus=y
+CONFIG_PACKAGE_kmod-dsa-rtl8365mb=y
 
 CONFIG_PACKAGE_luci-app-ramfree=y
 CONFIG_PACKAGE_luci-i18n-ramfree-zh-cn=y
