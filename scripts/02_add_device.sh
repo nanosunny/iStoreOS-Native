@@ -96,7 +96,7 @@ $(call Device/Legacy/rk3568,$(1))
   DEVICE_DTS := rk3568/rk3568-nsy-g68-plus
   UBOOT_DEVICE_NAME := easepi-rk3568-rk809
   SUPPORTED_DEVICES += nsy,g68-plus
-  DEVICE_PACKAGES += kmod-dsa-rtl8365mb kmod-nvme kmod-scsi-core
+  DEVICE_PACKAGES += kmod-dsa-rtl8365mb kmod-nvme kmod-scsi-core kmod-mt7915e kmod-mt7916-firmware
 endef
 TARGET_DEVICES += nsy_g68-plus
 EOT
@@ -109,6 +109,13 @@ cp -f $GITHUB_WORKSPACE/configfiles/dts/rk3568/rk3568-nsy-g68-plus.dts target/li
 # 网口：G68-PLUS 的 RTL8367S 交换机走 DSA，lan1~lan4 + wan
 sed -i '0,/^\tcase "$board" in$/s//&\n\tnsy,g68-plus)\n\t\tucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" "wan"\n\t\t;;/' \
   target/linux/rockchip/armv8/base-files/etc/board.d/02_network
+
+# G68-PLUS：MT7916 无线（开源 mt76，板载 efuse 为空时读取默认 eeprom）+ RTL8367S 网口灯
+G68=$GITHUB_WORKSPACE/configfiles/nsy-g68-plus
+mkdir -p package/base-files/files/lib/firmware/mediatek package/kernel/mt76/patches
+cp -f $G68/mt7916_eeprom.bin package/base-files/files/lib/firmware/mediatek/
+cp -f $G68/990-mt76-add-mt7916-chipid.patch package/kernel/mt76/patches/
+cp -f $G68/999-rtl8365mb-dsa-leds.patch target/linux/rockchip/patches-${KERNEL_PATCHVER}/
 
 # 自定义 U-Boot 示例：Station M2 改用自编译的 station-m2-rk3566
 add_uboot_target station-m2-rk3566 rk3566 "Station M2" firefly_station-m2
