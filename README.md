@@ -9,7 +9,7 @@
 
   [![](https://img.shields.io/badge/-目录:-696969.svg)](#readme)
   [![](https://img.shields.io/badge/-项目介绍-FFFFFF.svg)](#-项目介绍-)
-  [![](https://img.shields.io/badge/-第三方插件-FFFFFF.svg)](#-第三方插件-)
+  [![](https://img.shields.io/badge/-插件说明-FFFFFF.svg)](#-插件说明-)
   [![](https://img.shields.io/badge/-支持设备-FFFFFF.svg)](#-支持设备-)
   [![](https://img.shields.io/badge/-项目截图-FFFFFF.svg)](#-项目截图-)
   [![](https://img.shields.io/badge/-Thanks-FFFFFF.svg)](#-Thanks-)
@@ -32,18 +32,8 @@
 
 ---
 
-## 😅 第三方插件 [![](https://img.shields.io/badge/-第三方插件-FFFFFF.svg)](#-第三方插件-)
-| 插件                     |  状态   | 源码地址                                                                    | 备注         |
-|:------------------------:|:------:| ---------------------------------------------------------------------------- |:------------:|
-| luci-app-ramfree         |  ✅   | [Kwonelee/openwrt-packages](https://github.com/Kwonelee/openwrt-packages)    | 🟢 已测试    |
-| luci-app-filebrowser-go  |  ✅   | [Kwonelee/openwrt-packages](https://github.com/Kwonelee/openwrt-packages)    | 🟢 已测试    |
-| luci-app-adguardhome     |  ⏳   | [w9315273/adguardhome](https://github.com/w9315273/luci-app-adguardhome)      |  -           |
-| luci-app-openlist2       |  ⏳   | [sbwml/luci-app-openlist2](https://github.com/sbwml/luci-app-openlist2)       |  -           |
-| luci-app-lucky           |  ⏳   | [gdy666/luci-app-lucky](https://github.com/gdy666/luci-app-lucky)             |  -           |
-| luci-app-zerotier        |  ⏳   | [sbwml/openwrt_pkgs](https://github.com/sbwml/openwrt_pkgs)                   |  -           |
-| 其他                     |  ⏳   |                                                                               |              |
-
-✅ 支持 - ⏳ 计划中 - ⭕ 不支持
+## 😅 插件说明 [![](https://img.shields.io/badge/-插件说明-FFFFFF.svg)](#-插件说明-)
+固件内置插件与官方 iStoreOS 固件保持一致（配置来自官方 [config.buildinfo](https://fw0.koolcenter.com/iStoreOS/easepi-r1/config.buildinfo)），不额外集成第三方插件，需要的插件请从 iStore 商店安装。
 
 ## 😊 支持设备 [![](https://img.shields.io/badge/-支持设备-FFFFFF.svg)](#-支持设备-)
 | 设备         |  状态     |  包名                                                                  | 备注                        |
