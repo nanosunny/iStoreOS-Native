@@ -24,60 +24,10 @@ add_uboot_target() {
 }
 
 # ============================================================================================================
-# 移植RK3399示例，其他RK3399可模仿
-# ============================================================================================================
-# 增加设备（与上游 nanopi-r4s 相同方式，dts 放在 target/linux/rockchip/dts 下，无需给内核打 Makefile 补丁）
-if grep -q '^define Device/rk3399$' target/linux/rockchip/image/armv8.mk; then
-  RK3399_BASE='  $(Device/rk3399)'
-else
-  RK3399_BASE='  SOC := rk3399'
-fi
-#cat >> target/linux/rockchip/image/armv8.mk <<EOT
-#
-#define Device/tvi_tvi3315a
-#$RK3399_BASE
-#  DEVICE_VENDOR := Tvi
-#  DEVICE_MODEL := TVI3315A
-#  UBOOT_DEVICE_NAME := tvi3315a-rk3399
-#  DEVICE_DTS_DIR := ../dts
-#  DEVICE_DTS = rk3399/rk3399-tvi3315a
-#  KERNEL = kernel-bin | lzma | fit lzma \$\$(KDIR)/image-rk3399-tvi3315a.dtb
-#endef
-#TARGET_DEVICES += tvi_tvi3315a
-#EOT
-
-# U-Boot
-#add_uboot_target tvi3315a-rk3399 rk3399 TVI3315A tvi_tvi3315a
-#cp -f $GITHUB_WORKSPACE/configfiles/dts/rk3399/{rk3399.dtsi,rk3399-opp.dtsi,rk3399-tvi3315a.dts} $UBOOT_SRC/arch/arm/dts/
-#cp -f $GITHUB_WORKSPACE/configfiles/uboot-rockchip/rk3399-tvi3315a-u-boot.dtsi $UBOOT_SRC/arch/arm/dts/
-#cp -f $GITHUB_WORKSPACE/configfiles/uboot-rockchip/tvi3315a-rk3399_defconfig $UBOOT_SRC/configs/
-
-# 内核 dts
-#mkdir -p target/linux/rockchip/dts/rk3399
-#if [ "$KERNEL_PATCHVER" = "6.6" ]; then
-#  cp -f $GITHUB_WORKSPACE/configfiles/dts/rk3399/{rk3399.dtsi,rk3399-opp.dtsi,rk3399-tvi3315a.dts} target/linux/rockchip/dts/rk3399/
-#else
-#  # 6.12 起内核的 rk3399.dtsi 已拆分为 rk3399-base.dtsi 并内置 OPP，直接使用内核自带的
-#  sed -e 's|^#include "rk3399.dtsi"|#include <rockchip/rk3399.dtsi>|' \
-#      -e '/^#include "rk3399-opp.dtsi"/d' \
-#      $GITHUB_WORKSPACE/configfiles/dts/rk3399/rk3399-tvi3315a.dts > target/linux/rockchip/dts/rk3399/rk3399-tvi3315a.dts
-#fi
-
-# ============================================================================================================
 # 移植RK3566示例，其他RK35xx可模仿
 # ============================================================================================================
 # 增加设备（RK35xx 走 legacy.mk，使用上游通用 U-Boot）
 cat >> target/linux/rockchip/image/legacy.mk <<'EOT'
-
-#define Device/jp_jp-tvbox
-#$(call Device/Legacy/rk3566,$(1))
-#  DEVICE_VENDOR := Jp
-#  DEVICE_MODEL := JP TVBOX
-#  DEVICE_DTS := rk3568/rk3566-jp-tvbox
-#  SUPPORTED_DEVICES += jp,jp-tvbox
-#  DEVICE_PACKAGES += kmod-scsi-core
-#endef
-#TARGET_DEVICES += jp_jp-tvbox
 
 define Device/panther_panther-x2
 $(call Device/Legacy/rk3566,$(1))
@@ -102,7 +52,6 @@ TARGET_DEVICES += nsy_g68-plus
 EOT
 
 # 复制dts到target/linux/rockchip/dts/rk3568
-#cp -f $GITHUB_WORKSPACE/configfiles/dts/rk3568/rk3566-jp-tvbox.dts target/linux/rockchip/dts/rk3568/
 cp -f $GITHUB_WORKSPACE/configfiles/dts/rk3568/rk3566-panther-x2.dts target/linux/rockchip/dts/rk3568/
 cp -f $GITHUB_WORKSPACE/configfiles/dts/rk3568/rk3568-nsy-g68-plus.dts target/linux/rockchip/dts/rk3568/
 
