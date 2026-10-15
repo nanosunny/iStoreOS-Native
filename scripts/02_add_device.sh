@@ -67,11 +67,11 @@ cp -f $G68/990-mt76-add-mt7916-chipid.patch package/kernel/mt76/patches/
 cp -f $G68/999-rtl8365mb-dsa-leds.patch target/linux/rockchip/patches-${KERNEL_PATCHVER}/
 
 # 自定义 U-Boot 示例：Station M2 改用自编译的 station-m2-rk3566
-add_uboot_target station-m2-rk3566 rk3566 "Station M2" firefly_station-m2
-sed -i '/^define Device\/firefly_station-m2$/,/^endef$/{
-  s/^  DEVICE_PACKAGES := /  DEVICE_PACKAGES += /
-  /^endef$/i\  UBOOT_DEVICE_NAME := station-m2-rk3566
-}' target/linux/rockchip/image/legacy.mk
-cp -f $GITHUB_WORKSPACE/configfiles/dts/rk3568/rk3566-roc-pc.dts $UBOOT_SRC/arch/arm/dts/
-cp -f $GITHUB_WORKSPACE/configfiles/uboot-rockchip/rk3566-station-m2-u-boot.dtsi $UBOOT_SRC/arch/arm/dts/
-cp -f $GITHUB_WORKSPACE/configfiles/uboot-rockchip/station-m2-rk3566_defconfig $UBOOT_SRC/configs/
+#add_uboot_target station-m2-rk3566 rk3566 "Station M2" firefly_station-m2
+#sed -i '/^define Device\/firefly_station-m2$/,/^endef$/{
+#  s/^  DEVICE_PACKAGES := /  DEVICE_PACKAGES += /
+#  /^endef$/i\  UBOOT_DEVICE_NAME := station-m2-rk3566
+#}' target/linux/rockchip/image/legacy.mk
+#cp -f $GITHUB_WORKSPACE/configfiles/dts/rk3568/rk3566-roc-pc.dts $UBOOT_SRC/arch/arm/dts/
+#cp -f $GITHUB_WORKSPACE/configfiles/uboot-rockchip/rk3566-station-m2-u-boot.dtsi $UBOOT_SRC/arch/arm/dts/
+#cp -f $GITHUB_WORKSPACE/configfiles/uboot-rockchip/station-m2-rk3566_defconfig $UBOOT_SRC/configs/
