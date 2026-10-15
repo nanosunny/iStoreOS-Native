@@ -27,11 +27,11 @@ add_uboot_target() {
 # 移植RK3399示例，其他RK3399可模仿
 # ============================================================================================================
 # 增加设备（与上游 nanopi-r4s 相同方式，dts 放在 target/linux/rockchip/dts 下，无需给内核打 Makefile 补丁）
-#if grep -q '^define Device/rk3399$' target/linux/rockchip/image/armv8.mk; then
-#  RK3399_BASE='  $(Device/rk3399)'
-#else
-#  RK3399_BASE='  SOC := rk3399'
-#fi
+if grep -q '^define Device/rk3399$' target/linux/rockchip/image/armv8.mk; then
+  RK3399_BASE='  $(Device/rk3399)'
+else
+  RK3399_BASE='  SOC := rk3399'
+fi
 #cat >> target/linux/rockchip/image/armv8.mk <<EOT
 #
 #define Device/tvi_tvi3315a
