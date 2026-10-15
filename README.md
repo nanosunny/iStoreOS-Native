@@ -33,12 +33,22 @@
 ---
 
 ## 😅 插件说明 [![](https://img.shields.io/badge/-插件说明-FFFFFF.svg)](#-插件说明-)
-固件内置插件与官方 iStoreOS 固件保持一致（配置来自官方 [config.buildinfo](https://fw0.koolcenter.com/iStoreOS/easepi-r1/config.buildinfo)），不额外集成第三方插件，需要的插件请从 iStore 商店安装。
+固件内置插件与官方 iStoreOS 固件保持一致（配置来自官方 [config.buildinfo](https://fw0.koolcenter.com/iStoreOS/easepi-r1/config.buildinfo)），其余插件可从 iStore 商店安装。
+
+已内置增强插件：
+- **OpenAppFilter (OAF) 应用过滤**：基于 DPI 深度包检测的上网行为管理插件，支持游戏 / 视频 / 聊天 / 下载等数百款应用的识别与过滤、按时间段管控、用户分组等功能。
+  - 源码 feed：`https://github.com/jjm2473/OpenAppFilter.git -b dev7`（jjm2473 针对 iStoreOS / 6.x 内核维护的适配分支）
+  - 已默认安装组件：`kmod-oaf`（内核模块）、`appfilter`（用户态守护进程）、`luci-app-oaf`（Web 界面）、`luci-i18n-oaf-zh-cn`（中文语言包）
+  - ⚠️ 使用提示：
+    - 请将设备作为**主路由**使用，并**关闭防火墙中的软件/硬件流量加速（flow offloading / SFE / Shortcut-FE）**，否则会绕过 netfilter 导致应用识别失效；
+    - 若与广告过滤、QoS、多 WAN、负载均衡等同样操作 nf_conn mark 的模块冲突，可能出现过滤无效，请按需关闭冲突功能；
+    - 首次使用请在 Web 界面「网络 → 应用过滤」中开启服务、勾选需要过滤的应用并保存生效，特征库可在插件页面在线更新。
+
 
 ## 😊 支持设备 [![](https://img.shields.io/badge/-支持设备-FFFFFF.svg)](#-支持设备-)
 | 设备         |  状态     |  包名                                                                  | 备注                        |
 |-------------|:---------:| ----------------------------------------------------------------------- |:----------------------------:|
-| panther-x2  |    ✅    | istoreos-rockchip-armv8-nsy_g68-plus-squashfs-sysupgrade.img.gz         | 🟢 已测试                    |
+| panther-x2  |    ✅    | istoreos-rockchip-armv8-panther_panther-x2-squashfs-sysupgrade.img.gz   | 🟢 已测试                    |
 | g68-plus    |    ✅    | istoreos-rockchip-armv8-nsy_g68-plus-squashfs-sysupgrade.img.gz         | 🟡 未测试                    |
 | 其他        |    ⏳    |                                                                          |                              |
 
