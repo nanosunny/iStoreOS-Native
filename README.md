@@ -40,6 +40,7 @@
 |-------------|:---------:| ----------------------------------------------------------------------- |:----------------------------:|
 | tvi3315a    |    ✅    | istoreos-rockchip-armv8-tvi_tvi3315a-squashfs-sysupgrade.img.gz         | 🟢 已测试                    |
 | jp-tvbox    |    ✅    | istoreos-rockchip-armv8-jp_jp-tvbox-squashfs-sysupgrade.img.gz          | 🟢 已测试                    |
+| panther-x2  |    ✅    | istoreos-rockchip-armv8-nsy_g68-plus-squashfs-sysupgrade.img.gz         | 🟢 已测试                    |
 | g68-plus    |    ✅    | istoreos-rockchip-armv8-nsy_g68-plus-squashfs-sysupgrade.img.gz         | 🟡 未测试                    |
 | 其他        |    ⏳    |                                                                          |                              |
 
@@ -60,6 +61,7 @@
 ## 🎉 Thanks [![](https://img.shields.io/badge/-Thanks-FFFFFF.svg)](#-Thanks-)
 - [istoreos](https://github.com/istoreos/istoreos)
 - [linux-6.6.y](https://github.com/unifreq/linux-6.6.y)
+- https://github.com/Kwonelee/iStoreOS-Actions
 
 ## 🙏 免责声明 [![](https://img.shields.io/badge/-免责声明-FFFFFF.svg)](#-免责声明-)
 - 📚 本固件仅供学习研究，严禁用于任何商业用途
