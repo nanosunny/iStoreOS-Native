@@ -49,8 +49,8 @@
 | 设备         |  状态     |  包名                                                                  | 备注                        |
 |-------------|:---------:| ----------------------------------------------------------------------- |:----------------------------:|
 | panther-x2  |    ✅    | istoreos-rockchip-armv8-panther_panther-x2-squashfs-sysupgrade.img.gz   | 🟢 已测试                    |
-| g68-plus    |    ✅    | istoreos-rockchip-armv8-nsy_g68-plus-squashfs-sysupgrade.img.gz         | 🟡 未测试                    |
-| 其他        |    ⏳    |                                                                          |                              |
+| g68-plus    |    ✅    | istoreos-rockchip-armv8-nsy_g68-plus-squashfs-sysupgrade.img.gz         | 🟡 待修复                    |
+| 其他        |    ⏳    |                                                                         |                             |
 
 ✅ 支持 - ⏳ 计划中 - ⭕ 不支持
 
