@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       target_subtarget:
-        description: 'Target Subtarget (e.g., 64, armv8, rk35xx, filogic)'
+        description: 'Target Subtarget (64, armv8, rk35xx, filogic)'
         required: true
         default: '64'
       custom_repo_url:
