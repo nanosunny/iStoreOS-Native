@@ -3,10 +3,6 @@ name: Build iStoreOS ImageBuilder
 on:
   workflow_dispatch:
     inputs:
-      target_system:
-        description: 'Target System (e.g., x86, armsr, rockchip, mediatek)'
-        required: true
-        default: 'x86'
       target_subtarget:
         description: 'Target Subtarget (e.g., 64, armv8, rk35xx, filogic)'
         required: true
