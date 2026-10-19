@@ -49,9 +49,9 @@ jobs:
           
           # 【专用定制点 1】：如果你想让 ImageBuilder 默认包含某些特定软件包
           # 取消下面的注释并修改包名，这些包会被预编译并打包进 ImageBuilder 的 packages/ 目录
-          # echo "CONFIG_PACKAGE_luci-app-store=y" >> .config
-          # echo "CONFIG_PACKAGE_docker=y" >> .config
-          # echo "CONFIG_PACKAGE_luci-app-dockerman=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-store=y" >> .config
+          echo "CONFIG_PACKAGE_docker=y" >> .config
+          echo "CONFIG_PACKAGE_luci-app-dockerman=y" >> .config
 
           # 应用默认配置
           make defconfig
