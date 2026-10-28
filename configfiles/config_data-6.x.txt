@@ -1,0 +1,5 @@
+CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_panther_panther-x2=y
+CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_nsy_g68-plus=y
+CONFIG_PACKAGE_kmod-dsa-rtl8365mb=y
+CONFIG_PACKAGE_kmod-mt7915e=y
+CONFIG_PACKAGE_kmod-mt7916-firmware=y
