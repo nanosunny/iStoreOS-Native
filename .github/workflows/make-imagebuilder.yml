@@ -45,7 +45,7 @@ on:
       upload_release:
         description: '是否把 IB 发布到 Release'
         required: true
-        default: false
+        default: true
         type: boolean
 
 permissions:
