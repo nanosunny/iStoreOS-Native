@@ -1,0 +1,188 @@
+name: Build Firmware With ImageBuilder
+
+# 使用上一步产出的定制 ImageBuilder 打包 panther-x2 / nsy-g68-plus 固件
+on:
+  workflow_dispatch:
+    inputs:
+      ib_source:
+        description: "IB 来源"
+        required: true
+        default: artifact
+        type: choice
+        options:
+          - artifact
+          - release
+          - url
+      ib_artifact_name:
+        description: "artifact 模式：Artifact 名称"
+        required: false
+        default: "iStoreOS-ImageBuilder-rockchip-armv8"
+        type: string
+      ib_release_tag:
+        description: "release 模式：Release 标签"
+        required: false
+        default: "imagebuilder-latest"
+        type: string
+      ib_url:
+        description: "url 模式：IB 直链（.tar.zst）"
+        required: false
+        default: ""
+        type: string
+      profiles:
+        description: "要打包的设备名（空格分隔，留空自动探测）"
+        required: false
+        default: ""
+        type: string
+      extra_packages:
+        description: "额外预装包（空格分隔）"
+        required: false
+        default: "luci-app-store luci-i18n-store-zh-cn luci-compat"
+        type: string
+      release_tag:
+        description: "固件发布到 Release 的标签（留空只上 Artifact）"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build-fw:
+    name: Build Firmware
+    runs-on: ubuntu-latest
+    steps:
+      - name: 准备工作目录
+        run: |
+          sudo mkdir -p /work
+          sudo chown -R "$USER:$USER" /work
+          mkdir -p /work/ib /work/out
+
+      - name: 从 Artifact 下载 IB
+        if: ${{ github.event.inputs.ib_source == 'artifact' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ github.event.inputs.ib_artifact_name }}
+          path: /work/ibdl
+
+      - name: 从 Release 下载 IB
+        if: ${{ github.event.inputs.ib_source == 'release' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TAG="${{ github.event.inputs.ib_release_tag }}"
+          mkdir -p /work/ibdl
+          ASSET="$(gh release view "$TAG" --repo "${{ github.repository }}" --json assets \
+            --jq '.assets[] | select(.name | endswith(".tar.zst")) | .name' | head -1)"
+          if [ -z "$ASSET" ]; then
+            echo "::error::Release $TAG 中未找到 .tar.zst 资产"
+            exit 1
+          fi
+          echo "下载资产：$ASSET"
+          gh release download "$TAG" --repo "${{ github.repository }}" \
+            --pattern "$ASSET" --dir /work/ibdl --clobber
+          ls -lh /work/ibdl
+
+      - name: 从 URL 下载 IB
+        if: ${{ github.event.inputs.ib_source == 'url' }}
+        run: |
+          set -e
+          URL="${{ github.event.inputs.ib_url }}"
+          test -n "$URL" || { echo "::error::ib_source=url 时必须填写 ib_url"; exit 1; }
+          mkdir -p /work/ibdl
+          curl -fL --connect-timeout 20 --max-time 900 --retry 3 -o /work/ibdl/ib.tar.zst "$URL"
+          ls -lh /work/ibdl
+
+      - name: 解压 IB
+        run: |
+          set -e
+          ARCHIVE="$(find /work/ibdl -name '*.tar.zst' | head -1)"
+          test -n "$ARCHIVE" || { echo "::error::未找到 IB 压缩包"; exit 1; }
+          echo "解压：$ARCHIVE"
+          tar --zstd -xf "$ARCHIVE" -C /work/ib --strip-components=1
+          echo "=== IB 顶层 ==="
+          ls /work/ib/
+
+      - name: 探测可用设备 profile
+        id: probe
+        working-directory: /work/ib
+        run: |
+          set -e
+          echo "=== make info 中的设备列表 ==="
+          make info 2>&1 | grep -E "^[a-z0-9_]+-[a-z0-9_.-]+:" | head -40 || true
+
+          WANT="${{ github.event.inputs.profiles }}"
+          if [ -z "$WANT" ]; then
+            WANT=""
+            for dev in panther-panther-x2 nsy-g68-plus; do
+              if make info 2>&1 | grep -qE "^${dev}:"; then
+                WANT="$WANT $dev"
+              fi
+            done
+          fi
+          WANT="$(echo "$WANT" | xargs)"
+          if [ -z "$WANT" ]; then
+            echo "::error::未探测到 panther-panther-x2 / nsy-g68-plus，请确认 IB 已正确注入设备"
+            exit 1
+          fi
+          echo "将打包 profile：$WANT"
+          echo "profiles=$WANT" >> "$GITHUB_OUTPUT"
+
+      - name: 逐个设备打包固件
+        working-directory: /work/ib
+        run: |
+          set -e
+          EXTRA="${{ github.event.inputs.extra_packages }}"
+          mkdir -p /work/out
+          for prof in ${{ steps.probe.outputs.profiles }}; do
+            echo ""
+            echo "================ 打包 $prof ================"
+            rm -rf bin tmp 2>/dev/null || true
+            make image PROFILE="$prof" PACKAGES="$EXTRA" -j"$(nproc)" V=s || {
+              echo "并行失败，改用单线程重试以显示真实错误"
+              make image PROFILE="$prof" PACKAGES="$EXTRA" -j1 V=s
+            }
+            echo "--- 产物 ---"
+            find bin -name '*sysupgrade*' -o -name '*factory*' 2>/dev/null | head -20
+            mkdir -p "/work/out/$prof"
+            cp -f bin/targets/*/*/*sysupgrade* "/work/out/$prof/" 2>/dev/null || true
+            cp -f bin/targets/*/*/profiles.json "/work/out/$prof/" 2>/dev/null || true
+          done
+
+      - name: 汇总产物与校验和
+        run: |
+          set -e
+          cd /work/out
+          echo "=== 收集到的固件 ==="
+          find . -type f | sort
+          CNT="$(find . -name '*sysupgrade*' | wc -l)"
+          echo "sysupgrade 固件数量：$CNT"
+          if [ "$CNT" -eq 0 ]; then
+            echo "::error::未产出任何 sysupgrade 固件"
+            exit 1
+          fi
+          cd /work/out && find . -type f -name '*sysupgrade*' -exec sha256sum {} \; > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: 上传固件为 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iStoreOS-firmware-rockchip-armv8
+          path: /work/out/**
+          retention-days: 30
+          compression-level: 6
+
+      - name: 发布固件到 Release
+        if: ${{ github.event.inputs.release_tag != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.release_tag }}
+          name: "iStoreOS Firmware - panther-x2 / G68-PLUS"
+          prerelease: false
+          files: /work/out/**
+          body: |
+            ## iStoreOS 固件（ImageBuilder 打包）
+            - 设备：panther-panther-x2、nsy-g68-plus
+            - profile：${{ steps.probe.outputs.profiles }}

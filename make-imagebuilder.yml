@@ -1,0 +1,301 @@
+name: Make iStoreOS ImageBuilder
+
+# 基于 OpenWrt 官方 ImageBuilder 二次注入与封装
+# 注入 panther-x2 / nsy-g68-plus 设备定义 + 网口映射 + MT7916 eeprom
+# 插件源使用 iStoreOS 官方 apk 源，产物发布到 Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      openwrt_ver:
+        description: "OpenWrt 官方 IB 版本（建议 25.12.6，内核 6.12）"
+        required: true
+        default: "25.12.6"
+        type: choice
+        options:
+          - "25.12.6"
+          - "25.12.5"
+          - "25.12.4"
+      istoreos_ver:
+        description: "iStoreOS 插件源版本（apk 源基线）"
+        required: true
+        default: "25.12"
+        type: choice
+        options:
+          - "25.12"
+      target_board:
+        description: "目标平台"
+        required: true
+        default: rockchip
+        type: choice
+        options:
+          - rockchip
+      target_subtarget:
+        description: "子架构"
+        required: true
+        default: armv8
+        type: choice
+        options:
+          - armv8
+      download_mirror:
+        description: "IB 下载镜像"
+        required: true
+        default: official
+        type: choice
+        options:
+          - official
+          - tuna
+      add_devices:
+        description: "是否注入 panther-x2 / nsy-g68-plus"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      try_patched_kmod:
+        description: "是否尝试拉取 iStoreOS 同版已编译 kmod 替换（MT7916/RTL8365MB）"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      release_tag:
+        description: "Release 标签（留空则只上 Artifact）"
+        required: false
+        default: "imagebuilder-latest"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  make-ib:
+    name: Build Custom ImageBuilder
+    runs-on: ubuntu-latest
+    steps:
+      - name: 准备工作目录
+        run: |
+          sudo mkdir -p /work
+          sudo chown -R "$USER:$USER" /work
+          mkdir -p /work/ib /work/build /work/scripts /work/out
+
+      - name: Checkout 本仓库
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          path: selfrepo
+
+      - name: 检查注入所需文件完整性
+        if: ${{ github.event.inputs.add_devices == 'true' }}
+        working-directory: selfrepo
+        run: |
+          echo "=== 核对设备注入必需文件 ==="
+          MISS=0
+          for f in \
+            configfiles/dts/rk3568/rk3566-panther-x2.dts \
+            configfiles/dts/rk3568/rk3568-nsy-g68-plus.dts \
+            configfiles/nsy-g68-plus/mt7916_eeprom.bin ; do
+            if [ ! -f "$f" ]; then
+              echo "::warning::缺少文件：$f"
+              MISS=$((MISS+1))
+            else
+              echo "  OK: $f"
+            fi
+          done
+          echo "缺失数量：$MISS（源码级补丁在 IB 中不可用，见步骤说明）"
+
+      - name: 写入注入辅助脚本
+        run: |
+          echo "$B64_APPEND_DEVICES" | base64 -d > /work/scripts/append_devices.py
+          echo "$B64_INJECT_NET"     | base64 -d > /work/scripts/inject_network.py
+          echo "$B64_WRITE_REPOS"    | base64 -d > /work/scripts/write_repos.py
+          echo "$B64_DL_KMOD"        | base64 -d > /work/scripts/dl_kmod.sh
+          chmod +x /work/scripts/*
+          ls -l /work/scripts/
+        env:
+          B64_APPEND_DEVICES: IyAtKi0gY29kaW5nOiB1dGYtOCAtKi0KIyDlkJHlrpjmlrkgSUIg55qEIHJvY2tjaGlwIOiuvuWkh+WumuS5ieaWh+S7tui/veWKoCBwYW50aGVyLXgyIC8gbnN5LWc2OC1wbHVzIOWumuS5iQppbXBvcnQgc3lzLCBvcwpmcm9tIHBhdGhsaWIgaW1wb3J0IFBhdGgKCmltYWdlX2RpciA9IFBhdGgoc3lzLmFyZ3ZbMV0pICAgICAgICAgICMgLi4uL3RhcmdldC9saW51eC9yb2NrY2hpcC9pbWFnZQpkdGJfZGlyICAgPSBQYXRoKHN5cy5hcmd2WzJdKSAgICAgICAgICAjIC4uLi9idWlsZF9kaXIvLi4uL2xpbnV4LXJvY2tjaGlwX2FybXY4CgojIOWKqOaAgemAieaLqeiuvuWkh+WumuS5ieaWh+S7tu+8muS8mOWFiCBhcm12OC5ta++8jOWbnumAgCBsZWdhY3kubWvvvIzlho3lm57pgIDlkIznm67lvZXku7vmhI/lkKsgRGV2aWNlLyDnmoQgLm1rCmNhbmRpZGF0ZXMgPSBbImFybXY4Lm1rIiwgImxlZ2FjeS5tayJdCnRhcmdldF9tayA9IE5vbmUKZm9yIGMgaW4gY2FuZGlkYXRlczoKICAgIHAgPSBpbWFnZV9kaXIgLyBjCiAgICBpZiBwLmlzX2ZpbGUoKToKICAgICAgICB0YXJnZXRfbWsgPSBwCiAgICAgICAgYnJlYWsKaWYgdGFyZ2V0X21rIGlzIE5vbmU6CiAgICBta3MgPSBzb3J0ZWQoaW1hZ2VfZGlyLmdsb2IoIioubWsiKSkKICAgIGlmIG5vdCBta3M6CiAgICAgICAgc3lzLmV4aXQoIkVSUk9SOiBpbWFnZS8g5LiL5rKh5pyJ5om+5Yiw5Lu75L2VIC5tayDmlofku7YiKQogICAgdGFyZ2V0X21rID0gbWtzWzBdCiAgICBwcmludCgiV0FSTjog5pyq5om+5YiwIGFybXY4Lm1rL2xlZ2FjeS5ta++8jOWbnumAgOWIsCAlcyIgJSB0YXJnZXRfbWsubmFtZSkKCmNvbnRlbnQgPSB0YXJnZXRfbWsucmVhZF90ZXh0KGVuY29kaW5nPSJ1dGYtOCIsIGVycm9ycz0icmVwbGFjZSIpCgojIOajgOafpSBJQiDph4zmmK/lkKblt7LmnInor6Xorr7lpIfnmoQgZHRi77yI5Yaz5a6a5piv5ZCm6IO955yf5q2j5omT5YyF77yJCmRlZiBoYXNfZHRiKHN0ZW0pOgogICAgZm9yIHBhdCBpbiAoImltYWdlLSVzLmR0YiIgJSBzdGVtLCAiJXMuZHRiIiAlIHN0ZW0pOgogICAgICAgIGlmIGxpc3QoZHRiX2Rpci5nbG9iKHBhdCkpOgogICAgICAgICAgICByZXR1cm4gVHJ1ZQogICAgcmV0dXJuIEZhbHNlCgpCTE9DSyA9ICIiIgojIC0tLSBjdXN0b20gZGV2aWNlcyBpbmplY3RlZCAtLS0KZGVmaW5lIERldmljZS9wYW50aGVyX3BhbnRoZXIteDIKJChjYWxsIERldmljZS9MZWdhY3kvcmszNTY2LCQoMSkpCiAgREVWSUNFX1ZFTkRPUiA6PSBQYW50aGVyCiAgREVWSUNFX01PREVMIDo9IHBhbnRoZXIteDIKICBERVZJQ0VfRFRTIDo9IHJrMzU2OC9yazM1NjYtcGFudGhlci14MgogIFNVUFBPUlRFRF9ERVZJQ0VTICs9IHBhbnRoZXIscGFudGhlci14MgogIERFVklDRV9QQUNLQUdFUyArPSBrbW9kLXNjc2ktY29yZQplbmRlZgpUQVJHRVRfREVWSUNFUyArPSBwYW50aGVyX3BhbnRoZXIteDIKCmRlZmluZSBEZXZpY2UvbnN5X2c2OC1wbHVzCiQoY2FsbCBEZXZpY2UvTGVnYWN5L3JrMzU2OCwkKDEpKQogIERFVklDRV9WRU5ET1IgOj0gTlNZCiAgREVWSUNFX01PREVMIDo9IEc2OC1QTFVTCiAgREVWSUNFX0RUUyA6PSByazM1NjgvcmszNTY4LW5zeS1nNjgtcGx1cwogIFVCT09UX0RFVklDRV9OQU1FIDo9IGVhc2VwaS1yazM1Njgtcms4MDkKICBTVVBQT1JURURfREVWSUNFUyArPSBuc3ksZzY4LXBsdXMKICBERVZJQ0VfUEFDS0FHRVMgKz0ga21vZC1kc2EtcnRsODM2NW1iIGttb2QtbnZtZSBrbW9kLXNjc2ktY29yZSBrbW9kLW10NzkxNWUga21vZC1tdDc5MTYtZmlybXdhcmUKZW5kZWYKVEFSR0VUX0RFVklDRVMgKz0gbnN5X2c2OC1wbHVzCiIiIgoKaWYgInBhbnRoZXJfcGFudGhlci14MiIgaW4gY29udGVudDoKICAgIHByaW50KCLlt7LljIXlkKvorr7lpIflrprkuYnvvIzot7Pov4fov73liqAiKQplbHNlOgogICAgdGFyZ2V0X21rLndyaXRlX3RleHQoY29udGVudC5yc3RyaXAoIlxuIikgKyAiXG4iICsgQkxPQ0ssIGVuY29kaW5nPSJ1dGYtOCIpCiAgICBwcmludCgi5bey6L+95Yqg6K6+5aSH5a6a5LmJ5YiwICVzIiAlIHRhcmdldF9tay5uYW1lKQoKIyBEVEIg5Y+v55So5oCn5oql5ZGKCmZvciBzdGVtIGluICgicmszNTY2LXBhbnRoZXIteDIiLCAicmszNTY4LW5zeS1nNjgtcGx1cyIpOgogICAgaWYgaGFzX2R0YihzdGVtKToKICAgICAgICBwcmludCgiT0sgICBEVEIg5Y+v55So77yaJXMiICUgc3RlbSkKICAgIGVsc2U6CiAgICAgICAgcHJpbnQoIldBUk4g5a6Y5pa5IElCIOaXoCAlcy5kdGIg4oCU4oCUIOivpeiuvuWkh+aJk+WMheaXtuWPr+iDveWboOe8uiBEVEIg5aSx6LSlIiAlIHN0ZW0pCgpwcmludCgiREVGU19GSUxFPSVzIiAlIHRhcmdldF9tay5uYW1lKQo=
+          B64_INJECT_NET: IyAtKi0gY29kaW5nOiB1dGYtOCAtKi0KIyDlkJEgMDJfbmV0d29yayDms6jlhaUgbnN5LGc2OC1wbHVzIOeahOe9keWPo+aYoOWwhO+8iOWFvOWuueS4pOenjSBjYXNlIOWGmeazle+8iQppbXBvcnQgc3lzCmZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aAoKbmV0ID0gUGF0aChzeXMuYXJndlsxXSkKbGluZXMgPSBuZXQucmVhZF90ZXh0KGVuY29kaW5nPSJ1dGYtOCIsIGVycm9ycz0icmVwbGFjZSIpLnNwbGl0bGluZXMoa2VlcGVuZHM9VHJ1ZSkKCmlmIGFueSgibnN5LGc2OC1wbHVzIiBpbiBsbiBmb3IgbG4gaW4gbGluZXMpOgogICAgcHJpbnQoIjAyX25ldHdvcmsg5bey5a2Y5ZyoIG5zeSxnNjgtcGx1cyDmnaHnm67vvIzot7Pov4ciKQogICAgc3lzLmV4aXQoMCkKCmluc2VydCA9ICgKICAgICdcdG5zeSxnNjgtcGx1cylcbicKICAgICdcdFx0dWNpZGVmX3NldF9pbnRlcmZhY2VzX2xhbl93YW4gImxhbjEgbGFuMiBsYW4zIGxhbjQiICJ3YW4iXG4nCiAgICAnXHRcdDs7XG4nCikKCmFuY2hvciA9IE5vbmUKZm9yIGksIGxuIGluIGVudW1lcmF0ZShsaW5lcyk6CiAgICBzID0gbG4uc3RyaXAoKQogICAgaWYgcyA9PSAnY2FzZSAiJGJvYXJkIiBpbicgb3IgcyA9PSAnY2FzZSAiJChib2FyZF9uYW1lKSIgaW4nOgogICAgICAgIGFuY2hvciA9IGkKICAgICAgICBicmVhawoKaWYgYW5jaG9yIGlzIE5vbmU6CiAgICBzeXMuZXhpdCgiRVJST1I6IDAyX25ldHdvcmsg5pyq5om+5YiwIGNhc2Ug5YWl5Y+jIikKCmxpbmVzLmluc2VydChhbmNob3IgKyAxLCBpbnNlcnQpCm5ldC53cml0ZV90ZXh0KCIiLmpvaW4obGluZXMpLCBlbmNvZGluZz0idXRmLTgiKQpwcmludCgiMDJfbmV0d29yayDms6jlhaXmiJDlip/vvIjplJrngrnooYwgJWTvvIkiICUgKGFuY2hvciArIDEpKQo=
+          B64_WRITE_REPOS: IyAtKi0gY29kaW5nOiB1dGYtOCAtKi0KIyDlhpnlhaUgaVN0b3JlT1Mg5a6Y5pa5IGFwayDmupDliLAgcmVwb3NpdG9yaWVzLmNvbmYKaW1wb3J0IHN5cwpmcm9tIHBhdGhsaWIgaW1wb3J0IFBhdGgKCm91dCA9IFBhdGgoc3lzLmFyZ3ZbMV0pCml2ZXIgPSBzeXMuYXJndlsyXQphcmNoID0gc3lzLmFyZ3ZbM10KCmxpbmVzID0gWwogICAgIiMjIGlTdG9yZU9TIOWumOaWuea6kO+8iOaMieWumOaWuem7mOiupO+8jOS4jeabv+aNoumVnOWDj++8iSIsCiAgICAic3JjL2d6IGlzdG9yZW9zX2Jhc2UgICAgICAgaHR0cHM6Ly9kbC5pc3RvcmVvcy5jb20vcmVsZWFzZXMvJXMvcGFja2FnZXMvJXMvYmFzZSIgJSAoaXZlciwgYXJjaCksCiAgICAic3JjL2d6IGlzdG9yZW9zX2NvcmUgICAgICAgaHR0cHM6Ly9kbC5pc3RvcmVvcy5jb20vcmVsZWFzZXMvJXMvcGFja2FnZXMvJXMvY29yZSIgJSAoaXZlciwgYXJjaCksCiAgICAic3JjL2d6IGlzdG9yZW9zX3BhY2thZ2VzICAgaHR0cHM6Ly9kbC5pc3RvcmVvcy5jb20vcmVsZWFzZXMvJXMvcGFja2FnZXMvJXMvcGFja2FnZXMiICUgKGl2ZXIsIGFyY2gpLAogICAgInNyYy9neiBpc3RvcmVvc19sdWNpICAgICAgIGh0dHBzOi8vZGwuaXN0b3Jlb3MuY29tL3JlbGVhc2VzLyVzL3BhY2thZ2VzLyVzL2x1Y2kiICUgKGl2ZXIsIGFyY2gpLAogICAgInNyYy9neiBpc3RvcmVvc19yb3V0aW5nICAgIGh0dHBzOi8vZGwuaXN0b3Jlb3MuY29tL3JlbGVhc2VzLyVzL3BhY2thZ2VzLyVzL3JvdXRpbmciICUgKGl2ZXIsIGFyY2gpLAogICAgInNyYy9neiBpc3RvcmVvc190ZWxlcGhvbnkgIGh0dHBzOi8vZGwuaXN0b3Jlb3MuY29tL3JlbGVhc2VzLyVzL3BhY2thZ2VzLyVzL3RlbGVwaG9ueSIgJSAoaXZlciwgYXJjaCksCiAgICAic3JjL2d6IGlzdG9yZW9zX2lzdG9yZSAgICAgaHR0cHM6Ly9kbC5pc3RvcmVvcy5jb20vcmVsZWFzZXMvJXMvcGFja2FnZXMvJXMvaXN0b3JlIiAlIChpdmVyLCBhcmNoKSwKICAgICIiLApdCm91dC53cml0ZV90ZXh0KCJcbiIuam9pbihsaW5lcyksIGVuY29kaW5nPSJ1dGYtOCIpCnByaW50KCJyZXBvc2l0b3JpZXMuY29uZiDlt7LlhpnlhaUgaVN0b3JlT1Mg5a6Y5pa55rqQ77yaJXMgLyAlcyIgJSAoaXZlciwgYXJjaCkpCg==
+          B64_DL_KMOD: IyEvYmluL2Jhc2gKc2V0ICtlCklCPSIkMSI7IElWRVI9IiQyIgpta2RpciAtcCAvdG1wL2tkbCAiJElCL3BhY2thZ2VzLWlzdG9yZW9zLWttb2QiCmNkIC90bXAva2RsIHx8IGV4aXQgMApLTV9CQVNFPSIiCmZvciBjYW5kaWRhdGUgaW4gXAogICJodHRwczovL2RsLmlzdG9yZW9zLmNvbS9yZWxlYXNlcy8ke0lWRVJ9L3RhcmdldHMvcm9ja2NoaXAvYXJtdjgva21vZHMiIFwKICAiaHR0cHM6Ly9mdy5rb29sY2VudGVyLmNvbS9pU3RvcmVPUy9yb2NrY2hpcC1hcm12OC9rbW9kcyIgOyBkbwogIGVjaG8gIuWwneivlSBrbW9kIOa6kO+8miRjYW5kaWRhdGUiCiAgaWYgY3VybCAtZnNJIC0tY29ubmVjdC10aW1lb3V0IDggLS1tYXgtdGltZSAxNSAiJGNhbmRpZGF0ZS9QYWNrYWdlcyIgPi9kZXYvbnVsbCAyPiYxIHx8IFwKICAgICBjdXJsIC1mc0kgLS1jb25uZWN0LXRpbWVvdXQgOCAtLW1heC10aW1lIDE1ICIkY2FuZGlkYXRlL1BhY2thZ2VzLmd6IiA+L2Rldi9udWxsIDI+JjEgOyB0aGVuCiAgICBLTV9CQVNFPSIkY2FuZGlkYXRlIgogICAgYnJlYWsKICBmaQpkb25lCmlmIFsgLXogIiRLTV9CQVNFIiBdOyB0aGVuCiAgZWNobyAiOjp3YXJuaW5nOjrmnKrmib7liLAgaVN0b3JlT1Mga21vZCDnm67lvZXvvIzkv53nlZnlrpjmlrkgSUIga21vZCIKICBleGl0IDAKZmkKZWNobyAi5L2/55SoIGttb2Qg5rqQ77yaJEtNX0JBU0UiCklEWD0iJChjdXJsIC1mc0wgLS1jb25uZWN0LXRpbWVvdXQgOCAtLW1heC10aW1lIDMwICIkS01fQkFTRS9QYWNrYWdlcyIgMj4vZGV2L251bGwpIgppZiBbIC16ICIkSURYIiBdOyB0aGVuCiAgSURYPSIkKGN1cmwgLWZzTCAtLWNvbm5lY3QtdGltZW91dCA4IC0tbWF4LXRpbWUgMzAgIiRLTV9CQVNFL1BhY2thZ2VzLmd6IiAyPi9kZXYvbnVsbCB8IGd6aXAgLWRjIDI+L2Rldi9udWxsKSIKZmkKZWNobyAiJElEWCIgPiBQYWNrYWdlcy50eHQKUkVQTEFDRUQ9MApmb3Iga3BrZyBpbiBrbW9kLW10NzkxNWUga21vZC1tdDc2LWNvbm5hYyBrbW9kLWRzYS1ydGw4MzY1bWIga21vZC1udm1lIDsgZG8KICBGTj0iJChlY2hvICIkSURYIiB8IGF3ayAtdiBwPSIka3BrZyIgJwogICAgL15QYWNrYWdlOi8geyBjdXI9JDIgfQogICAgL15GaWxlbmFtZTovIHsgaWYgKGN1cj09cCkgeyBwcmludCAkMiB9IH0nIHwgdGFpbCAtMSkiCiAgaWYgWyAtbiAiJEZOIiBdOyB0aGVuCiAgICBlY2hvICLkuIvovb3vvJokRk4iCiAgICBpZiBjdXJsIC1mTCAtLWNvbm5lY3QtdGltZW91dCA4IC0tbWF4LXRpbWUgOTAgLW8gIiQoYmFzZW5hbWUgIiRGTiIpIiAiJEtNX0JBU0UvJEZOIiA7IHRoZW4KICAgICAgUkVQTEFDRUQ9JCgoUkVQTEFDRUQrMSkpCiAgICBmaQogIGZpCmRvbmUKZWNobyAi5YWx5ouJ5Y+WICRSRVBMQUNFRCDkuKoga21vZCDljIUiCmNwIC1mIC90bXAva2RsLyouaXBrIC90bXAva2RsLyouYXBrICIkSUIvcGFja2FnZXMtaXN0b3Jlb3Mta21vZC8iIDI+L2Rldi9udWxsIHx8IHRydWUKbHMgLWxoICIkSUIvcGFja2FnZXMtaXN0b3Jlb3Mta21vZC8iIDI+L2Rldi9udWxsIHx8IHRydWUK
+
+      - name: 下载 OpenWrt 官方 ImageBuilder
+        working-directory: /work/build
+        run: |
+          set -e
+          VER="${{ github.event.inputs.openwrt_ver }}"
+          BOARD="${{ github.event.inputs.target_board }}"
+          SUB="${{ github.event.inputs.target_subtarget }}"
+          IB_NAME="openwrt-imagebuilder-${VER}-${BOARD}-${SUB}.Linux-x86_64.tar.zst"
+          if [ "${{ github.event.inputs.download_mirror }}" = "tuna" ]; then
+            IB_URL="https://mirrors.tuna.tsinghua.edu.cn/openwrt/releases/${VER}/targets/${BOARD}/${SUB}/${IB_NAME}"
+          else
+            IB_URL="https://downloads.openwrt.org/releases/${VER}/targets/${BOARD}/${SUB}/${IB_NAME}"
+          fi
+          echo "下载地址：$IB_URL"
+          curl -fL --connect-timeout 20 --max-time 600 --retry 3 -o "$IB_NAME" "$IB_URL"
+          ls -lh "$IB_NAME"
+
+      - name: 解压 ImageBuilder 并盘点目录结构
+        working-directory: /work/build
+        run: |
+          set -e
+          VER="${{ github.event.inputs.openwrt_ver }}"
+          BOARD="${{ github.event.inputs.target_board }}"
+          SUB="${{ github.event.inputs.target_subtarget }}"
+          IB_NAME="openwrt-imagebuilder-${VER}-${BOARD}-${SUB}.Linux-x86_64.tar.zst"
+          mkdir -p /work/ib
+          tar -xf "$IB_NAME" -C /work/ib --strip-components=1
+          rm -f "$IB_NAME"
+          echo "=== IB 顶层 ==="
+          ls /work/ib/
+          echo ""
+          echo "=== target/linux/rockchip/image/ ==="
+          ls /work/ib/target/linux/rockchip/image/ 2>/dev/null || echo "(不存在)"
+          echo ""
+          echo "=== build_dir 中 linux-rockchip 产物目录 ==="
+          find /work/ib/build_dir -maxdepth 2 -type d -name 'linux-rockchip*' 2>/dev/null || true
+          echo ""
+          echo "=== 现有 dtb 数量 ==="
+          find /work/ib/build_dir -name '*.dtb' 2>/dev/null | wc -l
+
+      - name: 定位 IB 关键路径（供后续步骤使用）
+        run: |
+          set -e
+          DEFS_DIR=/work/ib/target/linux/rockchip/image
+          test -d "$DEFS_DIR" || { echo "::error::找不到 $DEFS_DIR"; exit 1; }
+
+          DTBDIR="$(find /work/ib/build_dir -maxdepth 3 -type d -name 'linux-rockchip*' 2>/dev/null | head -1)"
+          if [ -z "$DTBDIR" ]; then
+            DTBDIR="$DEFS_DIR"
+          fi
+
+          NET="$(find /work/ib/target/linux/rockchip -path '*board.d/02_network' 2>/dev/null | head -1)"
+          if [ -z "$NET" ]; then
+            NET="$(find /work/ib/target/linux/rockchip -name '02_network' 2>/dev/null | head -1)"
+          fi
+
+          {
+            echo "DEFS_DIR=$DEFS_DIR"
+            echo "DTBDIR=$DTBDIR"
+            echo "NET=$NET"
+          } >> "$GITHUB_ENV"
+
+          echo "设备定义目录：$DEFS_DIR"
+          echo "DTB 产物目录：$DTBDIR"
+          echo "02_network ：${NET:-（未找到）}"
+
+      - name: 注入设备定义到 armv8.mk（动态适配文件名）
+        if: ${{ github.event.inputs.add_devices == 'true' }}
+        run: |
+          set -e
+          python3 /work/scripts/append_devices.py "$DEFS_DIR" "$DTBDIR"
+          echo ""
+          echo "=== 注入后设备列表 ==="
+          grep -hE '^TARGET_DEVICES \+=' "$DEFS_DIR"/*.mk | tail -10
+
+      - name: 注入 02_network 网口映射
+        if: ${{ github.event.inputs.add_devices == 'true' }}
+        run: |
+          set -e
+          if [ -z "$NET" ]; then
+            echo "::warning::IB 中未找到 02_network，跳过网口映射注入（打包时 lan/wan 可能需手工调整）"
+          else
+            python3 /work/scripts/inject_network.py "$NET"
+            grep -B1 -A3 'nsy,g68-plus' "$NET"
+          fi
+
+      - name: 注入 MT7916 eeprom 固件与 BCM WiFi 固件
+        if: ${{ github.event.inputs.add_devices == 'true' }}
+        run: |
+          set -e
+          SR="$GITHUB_WORKSPACE/selfrepo"
+          mkdir -p /work/ib/files/lib/firmware/mediatek /work/ib/files/lib/firmware/brcm
+          if [ -f "$SR/configfiles/nsy-g68-plus/mt7916_eeprom.bin" ]; then
+            cp -f "$SR/configfiles/nsy-g68-plus/mt7916_eeprom.bin" /work/ib/files/lib/firmware/mediatek/
+          fi
+          cp -f "$SR"/configfiles/firmware/brcm/*panther,x2* /work/ib/files/lib/firmware/brcm/ 2>/dev/null || true
+          echo "=== files/ 覆盖层内容 ==="
+          find /work/ib/files -type f | head -20
+
+      - name: 尝试拉取 iStoreOS 同版 kmod（MT7916 / RTL8365MB 等）
+        if: ${{ github.event.inputs.add_devices == 'true' && github.event.inputs.try_patched_kmod == 'true' }}
+        run: |
+          bash /work/scripts/dl_kmod.sh /work/ib "${{ github.event.inputs.istoreos_ver }}"
+
+      - name: 替换 repositories.conf 为 iStoreOS 官方源
+        run: |
+          set -e
+          cp -f /work/ib/repositories.conf /work/ib/repositories.conf.openwrt.bak
+          python3 /work/scripts/write_repos.py \
+            /work/ib/repositories.conf \
+            "${{ github.event.inputs.istoreos_ver }}" \
+            "aarch64_generic"
+          echo "=== 新 repositories.conf ==="
+          cat /work/ib/repositories.conf
+
+      - name: 预置 iStore 核心应用
+        run: |
+          set -e
+          TD=/work/ib/include/target-defaults.mk
+          if [ -f "$TD" ]; then
+            if ! grep -q 'luci-app-store' "$TD"; then
+              sed -i '/^DEFAULT_PACKAGES[[:space:]]*+=/ s/$/ luci-app-store luci-i18n-store-zh-cn luci-compat/' "$TD"
+            fi
+            grep 'DEFAULT_PACKAGES' "$TD" | head -3 || true
+          else
+            echo "::warning::未找到 include/target-defaults.mk，跳过预设包"
+          fi
+          echo "DEFAULT_PACKAGES 预置完成"
+
+      - name: 清理缓存并自检 profile
+        if: ${{ github.event.inputs.add_devices == 'true' }}
+        working-directory: /work/ib
+        run: |
+          rm -rf tmp 2>/dev/null || true
+          sudo apt-get update -qq >/dev/null 2>&1 || true
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential gawk unzip libncurses-dev zlib1g-dev python3 file wget \
+            xsltproc git ca-certificates >/dev/null 2>&1 || true
+          echo "=== make info 探测两设备 ==="
+          make info 2>&1 | grep -E "panther-panther-x2|nsy-g68-plus" || \
+            echo "::warning::make info 未列出两设备，请检查 armv8.mk 注入结果"
+
+      - name: 重新打包为定制 ImageBuilder
+        working-directory: /work
+        run: |
+          set -e
+          IVER="${{ github.event.inputs.istoreos_ver }}"
+          STAMP="$(date +%Y%m%d%H%M)"
+          OUT_NAME="istoreos-imagebuilder-${IVER}-pantherx2-g68plus-${STAMP}.Linux-x86_64"
+          mv ib "$OUT_NAME"
+          tar --zstd -cf "${OUT_NAME}.tar.zst" "$OUT_NAME"
+          sha256sum "${OUT_NAME}.tar.zst" > "${OUT_NAME}.tar.zst.sha256"
+          cat "${OUT_NAME}.tar.zst.sha256"
+          mv "${OUT_NAME}.tar.zst" "${OUT_NAME}.tar.zst.sha256" /work/out/
+          ls -lh /work/out/
+
+      - name: 上传为 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iStoreOS-ImageBuilder-${{ github.event.inputs.target_board }}-${{ github.event.inputs.target_subtarget }}
+          path: /work/out/*
+          retention-days: 30
+          compression-level: 0
+
+      - name: 发布到 Release
+        if: ${{ github.event.inputs.release_tag != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.release_tag }}
+          name: "iStoreOS ImageBuilder - panther-x2 / G68-PLUS"
+          prerelease: false
+          files: /work/out/*
+          body: |
+            ## iStoreOS ImageBuilder（基于 OpenWrt ${{ github.event.inputs.openwrt_ver }}）
+            - 目标平台：rockchip / armv8
+            - 集成设备：panther-panther-x2、nsy-g68-plus
+            - 插件源：iStoreOS 官方源（dl.istoreos.com）
+            - 说明：OpenWrt 官方 IB 不含内核源码，g68-plus 的 mt76 补丁与 RTL8365MB LED 补丁无法注入，
+              相关 kmod 由 try_patched_kmod 开关从 iStoreOS 已编译产物替换
