@@ -35,7 +35,7 @@ on:
       ib_standalone:
         description: 'IB 是否自带全部软件包（STANDALONE）：独立可用但体积大、更慢'
         required: true
-        default: false
+        default: true
         type: boolean
       build_threads:
         description: '编译线程数（0 = 自动取 CPU 核数一半）'
