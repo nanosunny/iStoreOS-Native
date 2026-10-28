@@ -3,12 +3,19 @@ name: Build Firmware With ImageBuilder
 # ============================================================================
 # 工作流二：用 ImageBuilder 打包 panther-x2 / g68-plus 固件
 #
-# 前置：必须先跑过「Make iStoreOS ImageBuilder」（工作流一），
-#       并在其中开启了「注入设备」，否则本工作流的 PROFILE 不存在。
+# 前置：必须先跑过「Make iStoreOS ImageBuilder」（工作流一），且其中开启了
+#       「注入设备」。IB 只认编译时存在的 profile，未注入则 PROFILE 不存在。
 #
-# 产物：两个设备的 squashfs-sysupgrade 固件
-#   iStoreOS-<版本>-rockchip-armv8-panther-x2-squashfs-sysupgrade.img.gz
-#   iStoreOS-<版本>-rockchip-armv8-g68-plus-squashfs-sysupgrade.img.gz
+# Profile 名说明（易错）：
+#   IB 的 PROFILE 使用 Device 全名（下划线形式），不是设备简称。
+#   本仓库 configfiles/config_data-6.x.txt 中即为：
+#     CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_panther_panther-x2=y
+#     CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_nsy_g68-plus=y
+#   对应 make image PROFILE=panther-panther-x2 / nsy-g68-plus
+#
+# 产物：
+#   iStoreOS-<版本>-rockchip-armv8-panther_panther-x2-squashfs-sysupgrade.img.gz
+#   iStoreOS-<版本>-rockchip-armv8-nsy_g68-plus-squashfs-sysupgrade.img.gz
 # ============================================================================
 
 on:
@@ -20,18 +27,17 @@ on:
         default: 'artifact'
         type: choice
         options:
-          - 'artifact'          # 使用工作流一上传的 Artifact
-          - 'url'               # 使用直链下载（Release / 镜像站）
-          - 'docker'            # 使用本仓库 Workflow 内构建（不推荐，改用工作流一）
+          - 'artifact'   # 使用工作流一上传的 Artifact（推荐）
+          - 'url'        # 使用直链下载（Release / 镜像站）
       ib_url:
         description: 'ib_source=url 时填写 IB 直链'
         required: false
         default: ''
         type: string
       profiles:
-        description: '要打包的设备（逗号分隔）'
-        required: true
-        default: 'panther-x2,g68-plus'
+        description: '要打包的 Profile（逗号分隔，留空=按 make info 自动探测两个设备）'
+        required: false
+        default: ''
         type: string
       extra_packages:
         description: '追加/剔除软件包（空格分隔，前缀 - 表示剔除）'
@@ -62,20 +68,17 @@ jobs:
   build-firmware:
     name: Build firmware
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
+    timeout-minutes: 240
 
     steps:
-      - name: 检出本仓库
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
       - name: 安装依赖
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            build-essential gawk gettext libncurses5-dev zlib1g-dev \
-            libssl-dev python3 python3-distutils rsync unzip file wget curl \
+            gawk gettext libncurses5-dev zlib1g-dev \
+            libssl-dev python3 python3-setuptools rsync unzip file wget curl \
             zstd gzip xz-utils libelf-dev
 
       - name: 准备 ImageBuilder（Artifact 来源）
@@ -91,74 +94,92 @@ jobs:
       - name: 准备 ImageBuilder（直链来源）
         if: ${{ inputs.ib_source == 'url' }}
         run: |
+          set -e
           mkdir -p ib
           if [ -z "${{ inputs.ib_url }}" ]; then
             echo "::error::ib_source=url 但未填写 ib_url"; exit 1
           fi
           wget -q --show-progress -O ib/ib.tar "${{ inputs.ib_url }}"
-          case "${{ inputs.ib_url }}" in
-            *.zst) zstd -d -f ib/ib.tar ;;
-            *.xz)  xz -d -f ib/ib.tar 2>/dev/null || true ;;
-          esac
 
       - name: 解压 ImageBuilder
         id: unpack
         run: |
+          set -e
           cd ib
-          ARCHIVE=$(find . -maxdepth 2 -type f \( -name '*.tar.zst' -o -name '*.tar.xz' -o -name 'ib.tar' \) | head -n1)
+          ARCHIVE=$(find . -maxdepth 2 -type f \
+            \( -name '*.tar.zst' -o -name '*.tar.xz' -o -name 'ib.tar' \) | head -n1)
           [ -z "$ARCHIVE" ] && { echo "::error::ib 目录下未找到 IB 压缩包"; ls -R .; exit 1; }
           echo "解压：$ARCHIVE"
           case "$ARCHIVE" in
             *.tar.zst) tar --zstd -xf "$ARCHIVE" ;;
             *)         tar -xf "$ARCHIVE" ;;
           esac
+          # IB 解压后目录名形如 openwrt-imagebuilder-...Linux-x86_64
           IBDIR=$(find . -maxdepth 1 -type d -name '*imagebuilder*' | head -n1)
           [ -z "$IBDIR" ] && IBDIR="."
           echo "ibdir=$PWD/$IBDIR" >> "$GITHUB_OUTPUT"
           echo "IB 目录：$PWD/$IBDIR"
           ls -la "$IBDIR" | head -30
 
-      - name: 校验设备 profile 是否可用
+      - name: 探测可用 Profile（确认设备已注入）
+        id: probe
         run: |
+          set -e
           cd "${{ steps.unpack.outputs.ibdir }}"
-          echo "===== 可用 Profile（截取关键部分）====="
-          make info 2>/dev/null | grep -iE 'panther|g68|rk356' || true
-          for p in $(echo "${{ inputs.profiles }}" | tr ',' ' '); do
-            if make info 2>/dev/null | grep -qi "$p"; then
-              echo "::notice::Profile 可用：$p"
-            else
-              echo "::error::Profile 不存在：$p。说明该 IB 未注入此设备，请重跑工作流一并开启「注入设备」。"
-              exit 1
-            fi
-          done
+          make info > /tmp/ib-info.txt 2>/dev/null || true
+          echo "===== IB 中与 panther / g68 相关的 Profile ====="
+          grep -iE 'panther|g68|nsy' /tmp/ib-info.txt || true
+
+          # 解析用户输入；留空则自动探测
+          PROFILES="${{ inputs.profiles }}"
+          if [ -z "$PROFILES" ]; then
+            PROFILES=""
+            grep -qi 'panther*_*panther-x2\|panther-panther-x2' /tmp/ib-info.txt \
+              && PROFILES="$PROFILES panther-panther-x2"
+            grep -qi 'nsy_g68-plus\|nsy-g68-plus' /tmp/ib-info.txt \
+              && PROFILES="$PROFILES nsy-g68-plus"
+            PROFILES=$(echo "$PROFILES" | xargs)
+          fi
+          if [ -z "$PROFILES" ]; then
+            echo "::error::IB 中未发现 panther-x2 / g68-plus。请确认工作流一开启了「注入设备」后再跑。"
+            echo "---- make info 全部 Profile（截取）----"
+            head -60 /tmp/ib-info.txt || true
+            exit 1
+          fi
+          echo "将打包：$PROFILES"
+          echo "profiles=$PROFILES" >> "$GITHUB_OUTPUT"
 
       - name: 更换 IB 软件源为国内镜像
-        if: ${{ contains(fromJSON('["artifact","url"]'), inputs.ib_source) }}
         run: |
+          set -e
           cd "${{ steps.unpack.outputs.ibdir }}"
           if [ -f repositories.conf ]; then
             sed -i 's#https\?://downloads.openwrt.org#https://mirrors.tuna.tsinghua.edu.cn/openwrt#g' repositories.conf
             echo "repositories.conf 已替换为清华源"
-            grep -E '^(src|# src)' repositories.conf | head -10
+            grep -E '^(src|# src)' repositories.conf | head -10 || true
           fi
-          if [ -f keys/*.pub ]; then echo "已内置签名密钥：$(ls keys | tr '\n' ' ')"; fi
+          if ls keys/*.pub >/dev/null 2>&1; then
+            echo "已内置签名密钥：$(ls keys | tr '\n' ' ')"
+          fi
 
       - name: 逐设备打包固件
         id: build
         run: |
+          set -e
           cd "${{ steps.unpack.outputs.ibdir }}"
-          mkdir -p "$GITHUB_WORKSPACE/out"
+          OUT="$GITHUB_WORKSPACE/out"
+          mkdir -p "$OUT"
           EXTRA="${{ inputs.extra_packages }}"
           PART=""
           if [ -n "${{ inputs.rootfs_partsize }}" ]; then
             PART="ROOTFS_PARTSIZE=${{ inputs.rootfs_partsize }}"
           fi
+          [ -d files ] || mkdir -p files
           FAILED=""
-          for p in $(echo "${{ inputs.profiles }}" | tr ',' ' '); do
+          for p in ${{ steps.probe.outputs.profiles }}; do
             echo "==================== 打包 $p ===================="
             rm -rf bin/targets 2>/dev/null || true
-            # make image 会先 update 源，-j 加速；失败则加 V=s 重试一次
-            if ! make image PROFILE="$p" PACKAGES="$EXTRA" FILES="files/" $PART -j$(nproc); then
+            if ! make image PROFILE="$p" PACKAGES="$EXTRA" FILES="files/" $PART -j"$(nproc)"; then
               echo "::warning::$p 首次打包失败，单线程 V=s 重试"
               if ! make image PROFILE="$p" PACKAGES="$EXTRA" FILES="files/" $PART V=s; then
                 echo "::error::$p 打包失败"
@@ -166,45 +187,50 @@ jobs:
                 continue
               fi
             fi
-            # 只收 sysupgrade 固件，跳过镜像/其他中间产物
-            find bin/targets -type f \( -name '*sysupgrade*.img.gz' -o -name '*sysupgrade*.img' \) -print0 \
-              | xargs -0 -I{} cp -v {} "$GITHUB_WORKSPACE/out/" || true
+            # 只收 sysupgrade 固件；兼容下划线与连字符两种设备命名
+            find bin/targets -type f \
+              \( -name '*sysupgrade*.img.gz' -o -name '*sysupgrade*.img' \) -print0 \
+              | xargs -0 -I{} cp -v {} "$OUT/" || true
           done
           echo "===== 本次收集到的固件 ====="
-          ls -lh "$GITHUB_WORKSPACE/out/" || true
-          if [ ! -z "$FAILED" ]; then
+          ls -lh "$OUT" || true
+          if [ -n "$FAILED" ]; then
             echo "::error::以下设备打包失败：$FAILED"; exit 1
           fi
+          [ "$(ls -A "$OUT" 2>/dev/null)" ] || { echo "::error::未收集到任何固件"; exit 1; }
 
       - name: 生成固件校验信息（SHA256）
         run: |
+          set -e
           cd "$GITHUB_WORKSPACE/out"
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: 写入构建摘要
+        if: always()
         run: |
           {
-            echo "## 固件打包完成"
+            echo "## 固件打包结果"
             echo ""
             echo "- ImageBuilder 来源：\`${{ inputs.ib_source }}\`"
-            echo "- 打包设备：\`${{ inputs.profiles }}\`"
-            echo "- 追加软件包：\`${{ inputs.extra_packages }}\`"
+            echo "- 打包 Profile：\`${{ steps.probe.outputs.profiles }}\`"
+            echo "- 追/剔软件包：\`${{ inputs.extra_packages }}\`"
             echo ""
             echo "### 产物"
             echo '```'
-            ls -lh "$GITHUB_WORKSPACE/out" | awk 'NR>1{print $5, $9}'
+            ls -lh "$GITHUB_WORKSPACE/out" 2>/dev/null | awk 'NR>1{print $5, $9}' || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 上传固件为 Artifact
-        if: ${{ inputs.upload_artifact }}
+        if: ${{ inputs.upload_artifact && success() }}
         uses: actions/upload-artifact@v4
         with:
           name: iStoreOS-firmware-rockchip-armv8
           path: out/*
           compression-level: 0
           retention-days: 30
+          if-no-files-found: error
 
       - name: 发布固件到 Release（可选）
         if: ${{ inputs.upload_release }}

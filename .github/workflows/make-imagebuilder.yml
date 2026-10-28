@@ -4,14 +4,26 @@ name: Make iStoreOS ImageBuilder
 # 工作流一：制作 ImageBuilder（IB）
 #
 # 关键前提（必读）：
-#   panther-x2 / g68-plus 不是 iStoreOS 官方目标自带的设备，它们的 Device 定义、
-#   DTS、无线与交换芯片补丁，都是由本仓库 scripts/02_add_device.sh 注入上游源码的。
-#   ImageBuilder 是「源码编译后的产物」，只认编译时存在的 profile。
-#   因此要做出「能打出 panther-x2 / g68-plus 固件」的 IB，
-#   必须在【注入设备之后】的源码上编译并打包 IB。
-#   否则工作流二里 make image PROFILE=panther-x2 会报 Unknown profile。
+#   panther-x2 / g68-plus 不是 iStoreOS 官方目标自带的设备。它们的 Device 定义、
+#   DTS、无线与交换芯片补丁，全部由【本仓库】的 scripts/02_add_device.sh 注入
+#   上游源码。ImageBuilder 是「源码编译后的产物」，只认编译时存在的 profile，
+#   因此必须先把设备注入到上游源码，再在这份源码上编译并打包 IB。
 #
-# 产出：iStoreOS-imagebuilder-rockchip-armv8.Linux-x86_64.tar.zst
+#   ⚠️ 02_add_device.sh 不在上游 istoreos 仓库里，它在本仓库中。
+#      上一版工作流 cd 进上游后在源码里 find 该脚本，必然报「未找到 02_add_device.sh」。
+#      本版改为：以本仓库根目录为 $GITHUB_WORKSPACE，再用绝对路径执行本仓库脚本。
+#
+#   02_add_device.sh 内部依赖（均在本仓库，checkout 后即在 $GITHUB_WORKSPACE 下）：
+#     scripts/02_add_device.sh
+#     configfiles/dts/rk3568/rk3566-panther-x2.dts
+#     configfiles/dts/rk3568/rk3568-nsy-g68-plus.dts
+#     configfiles/nsy-g68-plus/{mt7916_eeprom.bin,990-mt76-add-mt7916-chipid.patch,
+#                               999-rtl8365mb-dsa-leds.patch}
+#
+#   分支必须与实际补丁目录匹配：脚本按 target/linux/rockchip/Makefile 的
+#   KERNEL_PATCHVER 决定 patches-<ver> 目录，本仓库适配的是 25.12（内核 6.12）。
+#
+# 产出：bin/targets/rockchip/armv8/*-imagebuilder-*.tar.zst
 # ============================================================================
 
 on:
@@ -23,10 +35,13 @@ on:
         default: 'https://github.com/istoreos/istoreos.git'
         type: string
       source_branch:
-        description: '上游源码分支（要编译的目标分支）'
+        description: '上游源码分支（必须与设备补丁目录匹配）'
         required: true
         default: 'istoreos-25.12'
-        type: string
+        type: choice
+        options:
+          - istoreos-25.12
+          - istoreos-24.10
       add_devices:
         description: '是否注入 panther-x2 / g68-plus 设备与补丁'
         required: true
@@ -35,7 +50,7 @@ on:
       ib_standalone:
         description: 'IB 是否自带全部软件包（STANDALONE）：独立可用但体积大、更慢'
         required: true
-        default: true
+        default: false
         type: boolean
       build_threads:
         description: '编译线程数（0 = 自动取 CPU 核数一半）'
@@ -45,7 +60,7 @@ on:
       upload_release:
         description: '是否把 IB 发布到 Release'
         required: true
-        default: true
+        default: false
         type: boolean
 
 permissions:
@@ -55,6 +70,14 @@ concurrency:
   group: make-ib-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  # 本仓库脚本执行时使用的固定路径，避免 cd 后 $GITHUB_WORKSPACE 语义混淆
+  DIY_P1_SH: scripts/01_get_ready.sh
+  DIY_P2_SH: scripts/02_add_device.sh
+  DIY_P3_SH: scripts/03_prepare_package.sh
+  IB_BOARD: rockchip
+  IB_SUBTARGET: armv8
+
 jobs:
   make-ib:
     name: Build ImageBuilder (rockchip/armv8)
@@ -62,10 +85,36 @@ jobs:
     timeout-minutes: 480
 
     steps:
-      - name: 检出本仓库（获取设备注入脚本）
+      - name: 检出本仓库（获取注入脚本与 configfiles）
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          path: selfrepo
+
+      - name: 自检本仓库必需文件
+        run: |
+          set -e
+          BASE="$GITHUB_WORKSPACE/selfrepo"
+          need=(
+            "scripts/01_get_ready.sh"
+            "scripts/02_add_device.sh"
+            "scripts/03_prepare_package.sh"
+            "configfiles/dts/rk3568/rk3566-panther-x2.dts"
+            "configfiles/dts/rk3568/rk3568-nsy-g68-plus.dts"
+            "configfiles/nsy-g68-plus/mt7916_eeprom.bin"
+            "configfiles/nsy-g68-plus/990-mt76-add-mt7916-chipid.patch"
+            "configfiles/nsy-g68-plus/999-rtl8365mb-dsa-leds.patch"
+          )
+          miss=0
+          for f in "${need[@]}"; do
+            if [ -e "$BASE/$f" ]; then
+              echo "OK   $f"
+            else
+              echo "::error::缺少必需文件 $f"
+              miss=1
+            fi
+          done
+          [ "$miss" = "0" ] || exit 1
 
       - name: 释放磁盘空间
         uses: jlumbroso/free-disk-space@main
@@ -79,14 +128,17 @@ jobs:
           swap-storage: false
 
       - name: 安装构建依赖
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
             build-essential clang flex bison g++ gawk gettext git \
+            gcc-multilib g++-multilib \
             libncurses5-dev libncursesw5-dev zlib1g-dev libssl-dev \
-            python3 python3-distutils python3-setuptools python3-pip \
-            rsync unzip file wget curl time swig subversion \
-            zstd gzip xz-utils ecj fastjar jq libelf-dev libgnutls28-dev
+            python3 python3-setuptools python3-pip python3-ply python3-pyelftools \
+            rsync unzip file wget curl time swig subversion patch \
+            zstd gzip xz-utils ecj fastjar jq libelf-dev libgnutls28-dev libglib2.0-dev
 
       - name: 配置编译线程数
         id: threads
@@ -97,127 +149,195 @@ jobs:
           else
             echo "j=${{ inputs.build_threads }}" >> "$GITHUB_OUTPUT"
           fi
-          echo "使用线程数: $(grep '^j=' $GITHUB_OUTPUT | cut -d= -f2)"
+          echo "使用线程数：$(grep '^j=' $GITHUB_OUTPUT | cut -d= -f2)"
 
       - name: 克隆上游源码
         run: |
+          set -e
           git clone --depth 1 \
             --branch "${{ inputs.source_branch }}" \
-            "${{ inputs.source_repo }}" istoreos
-          cd istoreos
-          git log -1 --pretty=format:'%H %ad %s' > /tmp/src-rev.txt
-          grep -qi istoreos .config VERSION 2>/dev/null || true
-          echo "源码版本：$(cat /tmp/src-rev.txt)"
+            "${{ inputs.source_repo }}" "$GITHUB_WORKSPACE/openwrt"
+          cd "$GITHUB_WORKSPACE/openwrt"
+          echo "上游源码版本：$(git log -1 --pretty=format:'%H %ad %s' --date=short)"
 
-      - name: 注入设备（panther-x2 / g68-plus）
-        if: ${{ inputs.add_devices }}
+      - name: 加载自定义 feeds.conf（本仓库 armv8/feeds.conf）
         run: |
-          cd istoreos
-          # 仓库脚本可能叫 scripts/02_add_device.sh 或位于根目录，两种都兜住
-          SCRIPT=$(find . -maxdepth 2 -name '02_add_device.sh' | head -n1)
-          if [ -z "$SCRIPT" ]; then
-            echo "::error::未找到 02_add_device.sh，无法注入设备。请确认 source_branch 是否为带该脚本的分支。"
-            exit 1
+          set -e
+          SRC="$GITHUB_WORKSPACE/selfrepo/armv8/feeds.conf"
+          if [ -f "$SRC" ]; then
+            cp -f "$SRC" "$GITHUB_WORKSPACE/openwrt/feeds.conf"
+            echo "已加载自定义 feeds.conf："
+            cat "$GITHUB_WORKSPACE/openwrt/feeds.conf"
+          else
+            echo "::warning::本仓库未提供 armv8/feeds.conf，使用上游默认"
           fi
-          echo "使用注入脚本：$SCRIPT"
-          bash "$SCRIPT"
-          # 校验：设备是否真的进入目标设备表
-          for dev in panther-x2 g68-plus; do
-            if grep -rq "$dev" target/linux/rockchip/image/ 2>/dev/null; then
-              echo "::notice::设备 $dev 已注入 target/linux/rockchip/image/"
-            else
-              echo "::warning::在 target/linux/rockchip/image/ 未找到 $dev，请检查注入脚本输出"
-            fi
-          done
 
       - name: 更换为国内下载源（加速）
         run: |
-          cd istoreos
-          # feeds 源与下载源镜像到清华，显著减少拉取超时与重试
+          set -e
+          cd "$GITHUB_WORKSPACE/openwrt"
           if [ -f feeds.conf.default ]; then
             sed -i 's#git://git.openwrt.org/feed/#https://mirrors.tuna.tsinghua.edu.cn/openwrt/feed/#g' feeds.conf.default
             sed -i 's#https://git.openwrt.org/feed/#https://mirrors.tuna.tsinghua.edu.cn/openwrt/feed/#g' feeds.conf.default
             sed -i 's#https://github.com/openwrt/#https://mirrors.tuna.tsinghua.edu.cn/openwrt/#g' feeds.conf.default
           fi
+          # 下载源镜像（dl 目录），显著减少超时重试
           mkdir -p files
+          echo "CONFIG_DOWNLOAD_FOLDER=\"$GITHUB_WORKSPACE/dl\"" > /tmp/dl.conf || true
           echo "下载源替换完成"
+
+      - name: 执行 P1（01_get_ready.sh：.vermagic / version）
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE/openwrt"
+          export GITHUB_WORKSPACE="$GITHUB_WORKSPACE/selfrepo"
+          chmod +x "$GITHUB_WORKSPACE/${{ env.DIY_P1_SH }}"
+          bash "$GITHUB_WORKSPACE/${{ env.DIY_P1_SH }}"
+          echo "--- .vermagic ---"; cat .vermagic
+          echo "--- version ---";   cat version
+
+      - name: 执行 P2（02_add_device.sh：注入设备与补丁）
+        if: ${{ inputs.add_devices }}
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE/openwrt"
+          # 脚本内以 $GITHUB_WORKSPACE/configfiles 取资源，这里把它指向本仓库根目录
+          export GITHUB_WORKSPACE="$GITHUB_WORKSPACE/selfrepo"
+          SCRIPT="$GITHUB_WORKSPACE/${{ env.DIY_P2_SH }}"
+          echo "执行注入脚本：$SCRIPT"
+          bash "$SCRIPT"
+
+          echo "===== 注入结果自检 ====="
+          fail=0
+          for dev in panther_panther-x2 nsy_g68-plus; do
+            if grep -q "define Device/${dev}\$" target/linux/rockchip/image/legacy.mk; then
+              echo "OK   legacy.mk 已包含 Device/${dev}"
+            else
+              echo "::error::legacy.mk 未包含 Device/${dev}"
+              fail=1
+            fi
+          done
+          for dts in rk3566-panther-x2.dts rk3568-nsy-g68-plus.dts; do
+            if [ -f "target/linux/rockchip/dts/rk3568/$dts" ]; then
+              echo "OK   DTS 已就位：$dts"
+            else
+              echo "::error::DTS 缺失：$dts"
+              fail=1
+            fi
+          done
+          [ "$fail" = "0" ] || { echo "::error::设备注入不完整，终止"; exit 1; }
 
       - name: 更新并安装 feeds
         run: |
-          cd istoreos
+          set -e
+          cd "$GITHUB_WORKSPACE/openwrt"
           ./scripts/feeds update -a
+          # 与官方流程一致：用本仓库的 node-pnpm 覆盖 feeds/packages 中的版本
+          cp -a "$GITHUB_WORKSPACE/selfrepo/configfiles/node-pnpm" feeds/packages/lang/ || true
+          ./scripts/feeds update packages
           ./scripts/feeds install -a
+
+      - name: 执行 P3（03_prepare_package.sh：ttyd/samba/rust/OAF）
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE/openwrt"
+          export GITHUB_WORKSPACE="$GITHUB_WORKSPACE/selfrepo"
+          chmod +x "$GITHUB_WORKSPACE/${{ env.DIY_P3_SH }}"
+          bash "$GITHUB_WORKSPACE/${{ env.DIY_P3_SH }}" || {
+            echo "::warning::P3 部分步骤失败，继续尝试编译"; }
 
       - name: 生成 IB 编译配置
         run: |
-          cd istoreos
-          # 直接写入 .config：只编 rockchip/armv8 目标 + 打开 IB
-          if [ "${{ inputs.ib_standalone }}" = "true" ]; then IB_STD=y; else IB_STD=n; fi
-          {
-            echo 'CONFIG_TARGET_rockchip=y'
-            echo 'CONFIG_TARGET_rockchip_armv8=y'
-            echo 'CONFIG_TARGET_MULTI_PROFILE=y'
-            echo 'CONFIG_TARGET_ALL_PROFILES=y'
-            echo 'CONFIG_IB=y'
-            echo "CONFIG_IB_STANDALONE=$IB_STD"
-            echo 'CONFIG_ALL_KMODS=n'
-            echo 'CONFIG_ALL=n'
-          } > .config
-          # 用 defconfig 归一化，并对新出现的选项一律取默认值
+          set -e
+          cd "$GITHUB_WORKSPACE/openwrt"
+          BOARD="${{ env.IB_BOARD }}"
+          SUB="${{ env.IB_SUBTARGET }}"
+          WANT_DEV="${{ inputs.add_devices }}"
+
+          # 以「只编 rockchip/armv8 + 允许两个自定义设备 + 打开 IB」为原则生成配置。
+          # 关键：不打开 TARGET_ALL_PROFILES，避免把官方全部设备都编进去（慢、产物大）。
+          : > .config
+          echo "CONFIG_TARGET_${BOARD}=y"              >> .config
+          echo "CONFIG_TARGET_${BOARD}_${SUB}=y"       >> .config
+          echo "CONFIG_TARGET_MULTI_PROFILE=y"         >> .config
+          echo "# CONFIG_TARGET_ALL_PROFILES is not set" >> .config
+          echo "CONFIG_TARGET_PER_DEVICE_ROOTFS=y"     >> .config
+
+          if [ "$WANT_DEV" = "true" ]; then
+            echo "CONFIG_TARGET_DEVICE_${BOARD}_${SUB}_DEVICE_panther_panther-x2=y" >> .config
+            echo "CONFIG_TARGET_DEVICE_${BOARD}_${SUB}_DEVICE_nsy_g68-plus=y"       >> .config
+          fi
+
+          echo "CONFIG_IB=y" >> .config
+          if [ "${{ inputs.ib_standalone }}" = "true" ]; then
+            echo "CONFIG_IB_STANDALONE=y" >> .config
+          else
+            echo "# CONFIG_IB_STANDALONE is not set" >> .config
+          fi
+          echo "# CONFIG_ALL_KMODS is not set" >> .config
+          echo "# CONFIG_ALL is not set"       >> .config
+
           make defconfig
           echo "===== 生效的关键配置 ====="
-          grep -E '^CONFIG_(TARGET_rockchip|TARGET_rockchip_armv8|IB|IB_STANDALONE|ALL_KMODS)' .config || true
+          grep -E '^CONFIG_(TARGET_'"${BOARD}"'|TARGET_MULTI_PROFILE|TARGET_PER_DEVICE_ROOTFS|IB|IB_STANDALONE)' .config || true
+          echo "--- IB 开关必须为 y ---"
+          grep -q '^CONFIG_IB=y' .config || { echo "::error::CONFIG_IB 未生效"; exit 1; }
 
       - name: 下载源码包（并发）
         run: |
-          cd istoreos
-          make download -j8
-          # 补一次单线程 download，修复个别未下全的包（失败不致命）
+          set -e
+          cd "$GITHUB_WORKSPACE/openwrt"
+          make download -j8 || true
+          # 单线程补漏，个别未下全的包在此修复（失败不致命）
           make download -j1 V=s || true
 
       - name: 编译工具链与目标（含注入设备的内核）
         run: |
-          cd istoreos
+          set -e
+          cd "$GITHUB_WORKSPACE/openwrt"
           J=${{ steps.threads.outputs.j }}
           echo "并行度 J=$J"
           if ! make tools/install toolchain/install target/linux/install -j"$J"; then
-            echo "::warning::并行编译失败，回退单线程重试以暴露真实错误"
+            echo "::warning::并行编译失败，回退单线程以暴露真实错误"
             make tools/install toolchain/install target/linux/install -j1 V=s
           fi
 
       - name: 打包 ImageBuilder
         run: |
-          cd istoreos
+          set -e
+          cd "$GITHUB_WORKSPACE/openwrt"
           make target/imagebuilder/compile -j1 V=s 2>&1 | tee /tmp/ib-build.log
-          echo "===== 定位 IB 产物 ====="
-          find bin/targets -name '*imagebuilder*' -o -name '*ImageBuilder*' | sort
+          echo "===== bin/targets 下的 IB 相关产物 ====="
+          find bin/targets -iname '*imagebuilder*' | sort || true
 
       - name: 收集并规整 IB 产物
         id: collect
         run: |
-          cd istoreos
-          mkdir -p ../out
-          IB=$(find bin/targets -type f \( -name '*.tar.zst' -o -name '*.tar.xz' \) \
-                -path '*imagebuilder*' | sort | head -n1)
+          set -e
+          cd "$GITHUB_WORKSPACE/openwrt"
+          DEST="$GITHUB_WORKSPACE/out"
+          mkdir -p "$DEST"
+          # 兼容 .tar.zst（25.12）与 .tar.xz（老版本）
+          IB=$(find bin/targets -type f \
+                 \( -name '*-imagebuilder-*.tar.zst' -o -name '*-imagebuilder-*.tar.xz' \) \
+               | sort | head -n1)
           if [ -z "$IB" ]; then
             echo "::error::未找到 ImageBuilder 压缩包，以下为 bin/targets 内容："
             find bin/targets -maxdepth 3 -type f | head -50
             exit 1
           fi
-          echo "找到 IB：$IB"
-          BASE=$(basename "$IB")
-          # 统一命名，供工作流二直接引用
-          cp "$IB" "../out/iStoreOS-imagebuilder-rockchip-armv8.Linux-x86_64.tar.zst"
-          echo "file=../out/iStoreOS-imagebuilder-rockchip-armv8.Linux-x86_64.tar.zst" >> "$GITHUB_OUTPUT"
-          echo "origin=$BASE" >> "$GITHUB_OUTPUT"
-          # 同时保存构建环境指纹，便于复现与排查
-          git log -1 --pretty=format:'%H' > ../out/SOURCE_REVISION.txt || true
-          ls -lh ../out/
+          echo "原生产物：$IB"
+          cp -f "$IB" "$DEST/iStoreOS-imagebuilder-rockchip-armv8.Linux-x86_64.tar.zst"
+          echo "file=$DEST/iStoreOS-imagebuilder-rockchip-armv8.Linux-x86_64.tar.zst" >> "$GITHUB_OUTPUT"
+          echo "origin=$(basename "$IB")" >> "$GITHUB_OUTPUT"
+          git log -1 --pretty=format:'%H' > "$DEST/SOURCE_REVISION.txt" || true
+          ls -lh "$DEST"
 
       - name: 写入构建摘要
+        if: always()
         run: |
           {
-            echo "## ImageBuilder 构建完成"
+            echo "## ImageBuilder 构建结果"
             echo ""
             echo "- 上游仓库：\`${{ inputs.source_repo }}\`"
             echo "- 源码分支：\`${{ inputs.source_branch }}\`"
@@ -225,16 +345,18 @@ jobs:
             echo "- STANDALONE：\`${{ inputs.ib_standalone }}\`"
             echo "- 产物原名：\`${{ steps.collect.outputs.origin }}\`"
             echo ""
-            echo "> 该 IB 已包含 panther-x2、g68-plus 设备，可直接用于「Build Firmware With ImageBuilder」工作流。"
+            echo "> 该 IB 已包含 panther_panther-x2、nsy_g68-plus，可直接用于「Build Firmware With ImageBuilder」。"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 上传 IB 为 Artifact
+        if: ${{ success() }}
         uses: actions/upload-artifact@v4
         with:
           name: iStoreOS-ImageBuilder-rockchip-armv8
           path: out/*
           compression-level: 0
           retention-days: 30
+          if-no-files-found: error
 
       - name: 发布到 Release（可选）
         if: ${{ inputs.upload_release }}
