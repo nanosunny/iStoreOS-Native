@@ -1,364 +1,270 @@
 name: Make iStoreOS ImageBuilder
 
-# ============================================================================
-# 工作流一：制作 ImageBuilder（IB）
-#
-# 设计口径（本版核心）：
-#   1) 插件源、feeds、软件包全部使用【官方默认】：
-#      - feeds 用本仓库自带的 armv8/feeds.conf（其首行 src-include defaults
-#        feeds.conf.default，即官方 feeds）。
-#      - 软件包/插件清单用本仓库自带的 armv8/.config（官方预置配置）。
-#      - 全程不替换任何镜像源（不改 dl、不改 feeds、不建 repositories.override）。
-#   2) 只做三处最小定制，其余保持官方原样：
-#      - 打开 CONFIG_IB=y（官方 .config 里默认是关闭的）。
-#      - 关闭 CONFIG_TARGET_ALL_PROFILES，把编译范围收敛到两个设备（减体积）。
-#      - 打开 panther-x2 / g68-plus 两个 Device，移除其余设备。
-#   3) 设备注入仍走本仓库的 scripts/02_add_device.sh（官方流程 P1→P2→P3）。
-#
-# 关键前提：
-#   panther-x2 / g68-plus 不是 iStoreOS 官方目标自带设备，其 Device 定义、DTS、
-#   无线与交换芯片补丁由本仓库 scripts/02_add_device.sh 注入上游源码。IB 只认
-#   编译时存在的 profile，因此必须先注入再基于同一份源码编译出 IB。
-#
-# 目录约定（与官方 build-istoreos-6.x.yml 一致）：
-#   actions/checkout 到 $GITHUB_WORKSPACE，上游源码 clone 到 $GITHUB_WORKSPACE/openwrt。
-#   于是本仓库脚本内部的 $GITHUB_WORKSPACE/configfiles 天然指向本仓库，无需再修正。
-#
-# 产出：bin/targets/rockchip/armv8/*-imagebuilder-*.tar.zst
-# ============================================================================
-
+# 制作带 panther-x2 / nsy-g68-plus 设备 + iStoreOS 插件源的 ImageBuilder
+# 基于 OpenWrt 最新稳定版官方 IB 二次注入与封装，最终产物发布到 Release
 on:
   workflow_dispatch:
     inputs:
-      source_repo:
-        description: 'iStoreOS 上游源码仓库'
+      openwrt_ver:
+        description: OpenWrt 版本（25.12 为最新稳定版）
         required: true
-        default: 'https://github.com/istoreos/istoreos.git'
-        type: string
-      source_branch:
-        description: '上游源码分支（必须与设备补丁目录 patches-<内核版本> 匹配）'
-        required: true
-        default: 'istoreos-25.12'
+        default: "25.12.6"
         type: choice
         options:
-          - istoreos-25.12
-          - istoreos-24.10
+          - "25.12.6"
+          - "25.12.5"
+      istoreos_ver:
+        description: 对应 iStoreOS 插件源版本（apk 源基线）
+        required: true
+        default: "25.12"
+        type: choice
+        options:
+          - "25.12"
+      target_board:
+        description: 目标架构
+        required: true
+        default: rockchip
+        type: choice
+        options:
+          - rockchip
+      target_subtarget:
+        description: 子架构
+        required: true
+        default: armv8
+        type: choice
+        options:
+          - armv8
+      download_mirror:
+        description: OpenWrt IB 下载镜像
+        required: true
+        default: tuna
+        type: choice
+        options:
+          - tuna
+          - official
       add_devices:
-        description: '注入 panther-x2 / g68-plus 设备与补丁'
+        description: 是否注入 panther-x2 / nsy-g68-plus 设备
         required: true
-        default: true
-        type: boolean
-      ib_standalone:
-        description: 'IB 自带全部 ipk（true=离线可用但体积大、更慢；false=更小更快）'
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      try_patched_kmod:
+        description: 是否尝试用 iStoreOS kmod 替换官方 kmod
         required: true
-        default: false
-        type: boolean
-      upload_release:
-        description: '是否把 IB 发布到 Release'
-        required: true
-        default: false
-        type: boolean
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      release_tag:
+        description: Release 标签（留空则只上 Artifact）
+        required: false
+        default: "imagebuilder-latest"
+        type: string
 
 permissions:
   contents: write
 
-concurrency:
-  group: make-ib-${{ github.ref }}
-  cancel-in-progress: false
-
-env:
-  DIY_P1_SH: scripts/01_get_ready.sh
-  DIY_P2_SH: scripts/02_add_device.sh
-  DIY_P3_SH: scripts/03_prepare_package.sh
-  BOARD: rockchip
-  SUBTARGET: armv8
-
 jobs:
   make-ib:
-    name: Build ImageBuilder (rockchip/armv8)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 600
-
+    name: Build Custom ImageBuilder
+    runs-on: ubuntu-latest
     steps:
-      - name: 检出本仓库（官方脚本与配置都从这里取）
+      - name: 准备工作目录
+        run: |
+          sudo mkdir -p /work
+          sudo chown -R $USER:$USER /work
+          mkdir -p /work/ib /work/build /work/scripts
+
+      - name: Checkout 本仓库
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          ref: ${{ github.ref }}
+          path: selfrepo
 
-      - name: 自检本仓库必需文件
+      - name: 检查注入所需文件完整性
+        if: ${{ github.event.inputs.add_devices == 'true' }}
+        working-directory: selfrepo
         run: |
-          set -e
-          need=(
-            "armv8/.config"
-            "armv8/feeds.conf"
-            "scripts/01_get_ready.sh"
-            "scripts/02_add_device.sh"
-            "scripts/03_prepare_package.sh"
-            "configfiles/dts/rk3568/rk3566-panther-x2.dts"
-            "configfiles/dts/rk3568/rk3568-nsy-g68-plus.dts"
-            "configfiles/nsy-g68-plus/mt7916_eeprom.bin"
-            "configfiles/nsy-g68-plus/990-mt76-add-mt7916-chipid.patch"
-            "configfiles/nsy-g68-plus/999-rtl8365mb-dsa-leds.patch"
-          )
-          miss=0
-          for f in "${need[@]}"; do
-            if [ -e "$f" ]; then
-              echo "OK   $f"
-            else
-              echo "::error::缺少必需文件 $f"
-              miss=1
+          echo "=== 核对设备注入必需文件 ==="
+          for f in \
+            configfiles/dts/rk3568/rk3566-panther-x2.dts \
+            configfiles/dts/rk3568/rk3568-nsy-g68-plus.dts \
+            configfiles/nsy-g68-plus/mt7916_eeprom.bin \
+            configfiles/nsy-g68-plus/990-mt76-add-mt7916-chipid.patch \
+            configfiles/nsy-g68-plus/999-rtl8365mb-dsa-leds.patch ; do
+            if [ ! -f "$f" ]; then
+              echo "::error::缺少必需文件：$f"
+              exit 1
             fi
+            echo "  OK: $f"
           done
-          [ "$miss" = "0" ] || exit 1
 
-      - name: 释放磁盘空间
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: false
-
-      - name: 安装构建依赖
+      - name: 放置辅助脚本（base64 解码写入，避免 YAML 缩进问题）
+        run: |
+          echo "$B64_APPEND_DEVICES" | base64 -d > /work/scripts/append_devices.py
+          echo "$B64_INJECT_NET"    | base64 -d > /work/scripts/inject_network.py
+          echo "$B64_WRITE_REPOS"   | base64 -d > /work/scripts/write_repos.py
+          echo "$B64_DL_KMOD"       | base64 -d > /work/scripts/dl_kmod.sh
+          chmod +x /work/scripts/*.py /work/scripts/*.sh
+          ls -l /work/scripts/
         env:
-          DEBIAN_FRONTEND: noninteractive
+          B64_APPEND_DEVICES: IyAtKi0gY29kaW5nOiB1dGYtOCAtKi0KaW1wb3J0IHN5cwpmcm9tIHBhdGhsaWIgaW1wb3J0IFBhdGgKCmxlZ2FjeSA9IFBhdGgoc3lzLmFyZ3ZbMV0pCmNvbnRlbnQgPSBsZWdhY3kucmVhZF90ZXh0KCkKYmxvY2sgPSAiIiIKIyAtLS0gY3VzdG9tIGRldmljZXMgaW5qZWN0ZWQgYnkgaVN0b3JlT1MtTmF0aXZlIC0tLQpkZWZpbmUgRGV2aWNlL3BhbnRoZXJfcGFudGhlci14MgokKGNhbGwgRGV2aWNlL0xlZ2FjeS9yazM1NjYsJCgxKSkKICBERVZJQ0VfVkVORE9SIDo9IFBhbnRoZXIKICBERVZJQ0VfTU9ERUwgOj0gcGFudGhlci14MgogIERFVklDRV9EVFMgOj0gcmszNTY4L3JrMzU2Ni1wYW50aGVyLXgyCiAgU1VQUE9SVEVEX0RFVklDRVMgKz0gcGFudGhlcixwYW50aGVyLXgyCiAgREVWSUNFX1BBQ0tBR0VTICs9IGttb2Qtc2NzaS1jb3JlCmVuZGVmClRBUkdFVF9ERVZJQ0VTICs9IHBhbnRoZXJfcGFudGhlci14MgoKZGVmaW5lIERldmljZS9uc3lfZzY4LXBsdXMKJChjYWxsIERldmljZS9MZWdhY3kvcmszNTY4LCQoMSkpCiAgREVWSUNFX1ZFTkRPUiA6PSBOU1kKICBERVZJQ0VfTU9ERUwgOj0gRzY4LVBMVVMKICBERVZJQ0VfRFRTIDo9IHJrMzU2OC9yazM1NjgtbnN5LWc2OC1wbHVzCiAgVUJPT1RfREVWSUNFX05BTUUgOj0gZWFzZXBpLXJrMzU2OC1yazgwOQogIFNVUFBPUlRFRF9ERVZJQ0VTICs9IG5zeSxnNjgtcGx1cwogIERFVklDRV9QQUNLQUdFUyArPSBrbW9kLWRzYS1ydGw4MzY1bWIga21vZC1udm1lIGttb2Qtc2NzaS1jb3JlIGttb2QtbXQ3OTE1ZSBrbW9kLW10NzkxNi1maXJtd2FyZQplbmRlZgpUQVJHRVRfREVWSUNFUyArPSBuc3lfZzY4LXBsdXMKIiIiCmlmICJwYW50aGVyX3BhbnRoZXIteDIiIG5vdCBpbiBjb250ZW50OgogICAgbGVnYWN5LndyaXRlX3RleHQoY29udGVudCArIGJsb2NrKQogICAgcHJpbnQoImxlZ2FjeS5tayDorr7lpIflrprkuYnov73liqDlrozmiJAiKQplbHNlOgogICAgcHJpbnQoImxlZ2FjeS5tayDlt7LljIXlkKvorr7lpIflrprkuYnvvIzot7Pov4ciKQo=
+          B64_INJECT_NET: IyAtKi0gY29kaW5nOiB1dGYtOCAtKi0KaW1wb3J0IHN5cwpmcm9tIHBhdGhsaWIgaW1wb3J0IFBhdGgKCm5ldCA9IFBhdGgoc3lzLmFyZ3ZbMV0pCmxpbmVzID0gbmV0LnJlYWRfdGV4dCgpLnNwbGl0bGluZXMoa2VlcGVuZHM9VHJ1ZSkKaWYgYW55KCJuc3ksZzY4LXBsdXMiIGluIGxuIGZvciBsbiBpbiBsaW5lcyk6CiAgICBwcmludCgiMDJfbmV0d29yayDlt7LlrZjlnKggbnN5LGc2OC1wbHVzIOadoeebriIpCiAgICBzeXMuZXhpdCgwKQoKaW5zZXJ0X2xpbmUgPSAnXHRuc3ksZzY4LXBsdXMpXG5cdFx0dWNpZGVmX3NldF9pbnRlcmZhY2VzX2xhbl93YW4gImxhbjEgbGFuMiBsYW4zIGxhbjQiICJ3YW4iXG5cdFx0OztcbicKaW5zZXJ0ZWQgPSBGYWxzZQpmb3IgaSwgbG4gaW4gZW51bWVyYXRlKGxpbmVzKToKICAgIHN0cmlwcGVkID0gbG4ucnN0cmlwKCJcbiIpCiAgICBpZiAnY2FzZSAiJGJvYXJkIiBpbicgaW4gc3RyaXBwZWQgb3IgJ2Nhc2UgIiQoYm9hcmRfbmFtZSkiIGluJyBpbiBzdHJpcHBlZDoKICAgICAgICBsaW5lcy5pbnNlcnQoaSArIDEsIGluc2VydF9saW5lKQogICAgICAgIGluc2VydGVkID0gVHJ1ZQogICAgICAgIGJyZWFrCmlmIG5vdCBpbnNlcnRlZDoKICAgIHJhaXNlIFN5c3RlbUV4aXQoIjAyX25ldHdvcmsg5pyq5om+5YiwIGNhc2Ug5YWl5Y+j77yM5peg5rOV5rOo5YWlIikKbmV0LndyaXRlX3RleHQoIiIuam9pbihsaW5lcykpCnByaW50KCIwMl9uZXR3b3JrIOazqOWFpeaIkOWKnyIpCg==
+          B64_WRITE_REPOS: IyAtKi0gY29kaW5nOiB1dGYtOCAtKi0KaW1wb3J0IHN5cwpmcm9tIHBhdGhsaWIgaW1wb3J0IFBhdGgKCm91dCA9IFBhdGgoc3lzLmFyZ3ZbMV0pCml2ZXIgPSBzeXMuYXJndlsyXQphcmNoID0gc3lzLmFyZ3ZbM10KbGluZXMgPSBbCiAgICAiIyMgaVN0b3JlT1Mg5a6Y5pa5IGFwayDova/ku7bmupDvvIjmjInlrpjmlrnpu5jorqTvvIzkuI3mm7/mjaLplZzlg4/vvIkiLAogICAgZiJzcmMvZ3ogaXN0b3Jlb3NfYmFzZSAgICAgICBodHRwczovL2RsLmlzdG9yZW9zLmNvbS9yZWxlYXNlcy97aXZlcn0vcGFja2FnZXMve2FyY2h9L2Jhc2UiLAogICAgZiJzcmMvZ3ogaXN0b3Jlb3NfY29yZSAgICAgICBodHRwczovL2RsLmlzdG9yZW9zLmNvbS9yZWxlYXNlcy97aXZlcn0vcGFja2FnZXMve2FyY2h9L2NvcmUiLAogICAgZiJzcmMvZ3ogaXN0b3Jlb3NfcGFja2FnZXMgICBodHRwczovL2RsLmlzdG9yZW9zLmNvbS9yZWxlYXNlcy97aXZlcn0vcGFja2FnZXMve2FyY2h9L3BhY2thZ2VzIiwKICAgIGYic3JjL2d6IGlzdG9yZW9zX2x1Y2kgICAgICAgaHR0cHM6Ly9kbC5pc3RvcmVvcy5jb20vcmVsZWFzZXMve2l2ZXJ9L3BhY2thZ2VzL3thcmNofS9sdWNpIiwKICAgIGYic3JjL2d6IGlzdG9yZW9zX3JvdXRpbmcgICAgaHR0cHM6Ly9kbC5pc3RvcmVvcy5jb20vcmVsZWFzZXMve2l2ZXJ9L3BhY2thZ2VzL3thcmNofS9yb3V0aW5nIiwKICAgIGYic3JjL2d6IGlzdG9yZW9zX3RlbGVwaG9ueSAgaHR0cHM6Ly9kbC5pc3RvcmVvcy5jb20vcmVsZWFzZXMve2l2ZXJ9L3BhY2thZ2VzL3thcmNofS90ZWxlcGhvbnkiLAogICAgZiJzcmMvZ3ogaXN0b3Jlb3NfaXN0b3JlICAgICBodHRwczovL2RsLmlzdG9yZW9zLmNvbS9yZWxlYXNlcy97aXZlcn0vcGFja2FnZXMve2FyY2h9L2lzdG9yZSIsCiAgICBmInNyYy9neiBpc3RvcmVvc19rbW9kICAgICAgIGh0dHBzOi8vZGwuaXN0b3Jlb3MuY29tL3JlbGVhc2VzL3tpdmVyfS90YXJnZXRzL3JvY2tjaGlwL2FybXY4L2ttb2RzIiwKICAgICIiLApdCm91dC53cml0ZV90ZXh0KCJcbiIuam9pbihsaW5lcykpCnByaW50KCJyZXBvc2l0b3JpZXMuY29uZiDlhpnlhaXlrozmiJAiKQo=
+          B64_DL_KMOD: IyEvYmluL2Jhc2gKc2V0ICtlCklCPSIkMSIKSVZFUj0iJDIiCm1rZGlyIC1wIC90bXAva2RsICIkSUIvcGFja2FnZXMtaXN0b3Jlb3Mta21vZCIKY2QgL3RtcC9rZGwgfHwgZXhpdCAwCktNX0JBU0U9IiIKZm9yIGNhbmRpZGF0ZSBpbiBcCiAgImh0dHBzOi8vZGwuaXN0b3Jlb3MuY29tL3JlbGVhc2VzLyR7SVZFUn0vdGFyZ2V0cy9yb2NrY2hpcC9hcm12OC9rbW9kcyIgXAogICJodHRwczovL2Z3Lmtvb2xjZW50ZXIuY29tL2lTdG9yZU9TL3JvY2tjaGlwLWFybXY4L2ttb2RzIiA7IGRvCiAgZWNobyAi5bCd6K+VIGttb2Qg5rqQ77yaJGNhbmRpZGF0ZSIKICBpZiBjdXJsIC1mc0kgLS1jb25uZWN0LXRpbWVvdXQgOCAtLW1heC10aW1lIDE1ICIkY2FuZGlkYXRlL0FQS0lOREVYLnRhci5neiIgPi9kZXYvbnVsbCAyPiYxIHx8IFwKICAgICBjdXJsIC1mc0kgLS1jb25uZWN0LXRpbWVvdXQgOCAtLW1heC10aW1lIDE1ICIkY2FuZGlkYXRlL1BhY2thZ2VzIiA+L2Rldi9udWxsIDI+JjEgOyB0aGVuCiAgICBLTV9CQVNFPSIkY2FuZGlkYXRlIgogICAgYnJlYWsKICBmaQpkb25lCmlmIFsgLXogIiRLTV9CQVNFIiBdOyB0aGVuCiAgZWNobyAiOjp3YXJuaW5nOjrmnKrmib7liLAgaVN0b3JlT1Mga21vZCDnm67lvZXvvIzkv53nlZnlrpjmlrkgSUIga21vZCIKICBleGl0IDAKZmkKZWNobyAi5L2/55SoIGttb2Qg5rqQ77yaJEtNX0JBU0UiCnJlcGxhY2VkPTAKZm9yIGtwa2cgaW4ga21vZC1tdDc5MTVlIGttb2QtbXQ3Ni1jb25uYWMga21vZC1ydGw4MzY1bWIga21vZC1kc2EtcmVhbHRlazsgZG8KICBmb3IgZXh0IGluIGFwayBpcGs7IGRvCiAgICBmPSQoY3VybCAtZnNMIC0tY29ubmVjdC10aW1lb3V0IDggLS1tYXgtdGltZSAzMCAiJEtNX0JBU0UvIiAyPi9kZXYvbnVsbCB8IGdyZXAgLW9FICIke2twa2d9X1teXCInPD4gXStcLiR7ZXh0fSIgfCBoZWFkIC0xKQogICAgaWYgWyAtbiAiJGYiIF07IHRoZW4KICAgICAgZWNobyAi5LiL6L2977yaJGYiCiAgICAgIGlmIGN1cmwgLWZMIC0tY29ubmVjdC10aW1lb3V0IDggLS1tYXgtdGltZSA2MCAtbyAiJGYiICIkS01fQkFTRS8kZiI7IHRoZW4KICAgICAgICByZXBsYWNlZD0kKChyZXBsYWNlZCsxKSkKICAgICAgZmkKICAgICAgYnJlYWsKICAgIGZpCiAgZG9uZQpkb25lCmVjaG8gIuWFseaLieWPliAkcmVwbGFjZWQg5LiqIGttb2Qg5YyFIgpjcCAtZiAvdG1wL2tkbC8qLmFwayAvdG1wL2tkbC8qLmlwayAiJElCL3BhY2thZ2VzLWlzdG9yZW9zLWttb2QvIiAyPi9kZXYvbnVsbCB8fCB0cnVlCmxzIC1saCAiJElCL3BhY2thZ2VzLWlzdG9yZW9zLWttb2QvIiB8fCB0cnVlCg==
+
+      - name: 下载 OpenWrt 官方 ImageBuilder
+        working-directory: /work/build
         run: |
           set -e
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            build-essential clang flex bison cmake g++ gawk \
-            gcc-multilib g++-multilib gettext git \
-            libgnutls28-dev libfuse-dev libncurses-dev libssl-dev \
-            python3 python3-pip python3-setuptools python3-ply python3-pyelftools \
-            rsync unzip zlib1g-dev file wget subversion patch upx-ucl \
-            autoconf automake curl asciidoc binutils bzip2 lib32gcc-s1 libc6-dev-i386 \
-            uglifyjs msmtp texinfo libreadline-dev libglib2.0-dev xmlto libelf-dev \
-            libtool autopoint antlr3 gperf ccache swig coreutils haveged scons \
-            libpython3-dev rename qemu-utils jq zstd gzip xz-utils
-          sudo apt-get install -y npm || true
-          sudo -E npm install -g pnpm 2>/dev/null || true
-          sudo -E npm install -g n 2>/dev/null || true
-          sudo -E n stable 2>/dev/null || true
-          sudo apt-get clean
-
-      - name: 克隆上游源码
-        run: |
-          set -e
-          git clone --depth 1 \
-            --branch "${{ inputs.source_branch }}" \
-            "${{ inputs.source_repo }}" "$GITHUB_WORKSPACE/openwrt"
-          cd "$GITHUB_WORKSPACE/openwrt"
-          echo "上游版本：$(git log -1 --pretty=format:'%H %ad %s' --date=short)"
-          echo "KERNEL_PATCHVER=$(sed -n 's/^KERNEL_PATCHVER:=//p' target/linux/rockchip/Makefile)"
-
-      - name: 缓存编译产物（ccache，加速二次构建）
-        uses: klever1988/cachewrtbuild@main
-        with:
-          ccache: 'true'
-          mixkey: ${{ runner.os }}-${{ env.SUBTARGET }}-${{ inputs.source_branch }}
-          prefix: ${{ github.workspace }}/openwrt
-
-      - name: 加载本仓库 feeds.conf（官方默认插件源，不做任何镜像替换）
-        run: |
-          set -e
-          cp -f "$GITHUB_WORKSPACE/armv8/feeds.conf" "$GITHUB_WORKSPACE/openwrt/feeds.conf"
-          echo "===== 生效的 feeds.conf ====="
-          cat "$GITHUB_WORKSPACE/openwrt/feeds.conf"
-          echo "===== 上游默认 feeds.conf.default ====="
-          cat "$GITHUB_WORKSPACE/openwrt/feeds.conf.default"
-
-      - name: 执行 P1（01_get_ready.sh：.vermagic / version）
-        working-directory: ${{ github.workspace }}/openwrt
-        run: |
-          set -e
-          chmod +x "$GITHUB_WORKSPACE/${{ env.DIY_P1_SH }}"
-          bash "$GITHUB_WORKSPACE/${{ env.DIY_P1_SH }}"
-          echo "--- .vermagic ---"; cat .vermagic
-          echo "--- version ---";   cat version
-
-      - name: 更新并安装 feeds（官方源，失败自动重试）
-        working-directory: ${{ github.workspace }}/openwrt
-        run: |
-          set -e
-          retry() {
-            local n=1
-            until "$@"; do
-              if [ "$n" -ge 3 ]; then echo "::error::重试 3 次仍失败：$*"; return 1; fi
-              echo ">> 失败，5s 后重试（$n/3）：$*"; n=$((n+1)); sleep 5
-            done
-          }
-          retry ./scripts/feeds update -a
-          mkdir -p feeds/packages/lang
-          cp -a "$GITHUB_WORKSPACE/configfiles/node-pnpm" feeds/packages/lang/
-          retry ./scripts/feeds update packages
-          retry ./scripts/feeds install -a
-          echo "feeds 更新并安装完成"
-
-      - name: 执行 P2（02_add_device.sh：注入两个设备）
-        if: ${{ inputs.add_devices }}
-        working-directory: ${{ github.workspace }}/openwrt
-        run: |
-          set -e
-          chmod +x "$GITHUB_WORKSPACE/${{ env.DIY_P2_SH }}"
-          bash "$GITHUB_WORKSPACE/${{ env.DIY_P2_SH }}"
-          echo "===== 设备注入自检 ====="
-          fail=0
-          for dev in panther_panther-x2 nsy_g68-plus; do
-            if grep -q "^define Device/${dev}\$" target/linux/rockchip/image/legacy.mk; then
-              echo "OK   legacy.mk 含 Device/${dev}"
-            else
-              echo "::error::legacy.mk 缺 Device/${dev}"; fail=1
-            fi
-          done
-          for dts in rk3566-panther-x2.dts rk3568-nsy-g68-plus.dts; do
-            if [ -f "target/linux/rockchip/dts/rk3568/$dts" ]; then
-              echo "OK   DTS $dts"
-            else
-              echo "::error::缺 DTS $dts"; fail=1
-            fi
-          done
-          [ "$fail" = "0" ] || { echo "::error::设备注入不完整，终止"; exit 1; }
-
-      - name: 执行 P3（03_prepare_package.sh）
-        working-directory: ${{ github.workspace }}/openwrt
-        run: |
-          set -e
-          chmod +x "$GITHUB_WORKSPACE/${{ env.DIY_P3_SH }}"
-          bash "$GITHUB_WORKSPACE/${{ env.DIY_P3_SH }}"
-          echo "P3 完成"
-
-      - name: 加载官方 .config 并做最小定制（打开 IB、收敛到两个设备）
-        working-directory: ${{ github.workspace }}/openwrt
-        run: |
-          set -e
-          # 直接用本仓库自带的官方预置配置，插件/软件包清单完全按官方
-          cp -f "$GITHUB_WORKSPACE/armv8/.config" .config
-          CFG=.config
-
-          # 1) 设备：只保留 panther-x2 / g68-plus，其余全部移除（减体积）
-          grep -vE '^#? *CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_' "$CFG" > "$CFG.tmp"
-          mv "$CFG.tmp" "$CFG"
-          echo 'CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_panther_panther-x2=y' >> "$CFG"
-          echo 'CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_nsy_g68-plus=y'       >> "$CFG"
-
-          # 2) 不再编译全部 profile
-          sed -i 's/^CONFIG_TARGET_ALL_PROFILES=y/# CONFIG_TARGET_ALL_PROFILES is not set/' "$CFG"
-          grep -q '^CONFIG_TARGET_MULTI_PROFILE=y' "$CFG" \
-            || sed -i 's/^# CONFIG_TARGET_MULTI_PROFILE is not set/CONFIG_TARGET_MULTI_PROFILE=y/' "$CFG"
-          grep -q '^CONFIG_TARGET_MULTI_PROFILE=y' "$CFG" \
-            || echo 'CONFIG_TARGET_MULTI_PROFILE=y' >> "$CFG"
-
-          # 3) 打开 ImageBuilder
-          sed -i 's/^# CONFIG_IB is not set/CONFIG_IB=y/' "$CFG"
-          grep -q '^CONFIG_IB=y' "$CFG" || echo 'CONFIG_IB=y' >> "$CFG"
-
-          # 4) STANDALONE 开关
-          if [ "${{ inputs.ib_standalone }}" = "true" ]; then
-            sed -i 's/^# CONFIG_IB_STANDALONE is not set/CONFIG_IB_STANDALONE=y/' "$CFG"
-            grep -q '^CONFIG_IB_STANDALONE=y' "$CFG" || echo 'CONFIG_IB_STANDALONE=y' >> "$CFG"
+          VER="${{ github.event.inputs.openwrt_ver }}"
+          BOARD="${{ github.event.inputs.target_board }}"
+          SUB="${{ github.event.inputs.target_subtarget }}"
+          IB_NAME="openwrt-imagebuilder-${VER}-${BOARD}-${SUB}.Linux-x86_64.tar.zst"
+          if [ "${{ github.event.inputs.download_mirror }}" = "tuna" ]; then
+            IB_URL="https://mirrors.tuna.tsinghua.edu.cn/openwrt/releases/${VER}/targets/${BOARD}/${SUB}/${IB_NAME}"
           else
-            sed -i 's/^CONFIG_IB_STANDALONE=y/# CONFIG_IB_STANDALONE is not set/' "$CFG"
+            IB_URL="https://downloads.openwrt.org/releases/${VER}/targets/${BOARD}/${SUB}/${IB_NAME}"
           fi
+          echo "下载地址：$IB_URL"
+          for i in 1 2 3; do
+            echo "=== 第 $i 次尝试 ==="
+            if curl -fL --connect-timeout 20 --max-time 240 --retry 3 -o "$IB_NAME" "$IB_URL"; then
+              echo "下载成功"
+              break
+            fi
+            if [ $i -eq 3 ]; then
+              echo "::error::IB 下载失败"
+              exit 1
+            fi
+            sleep 5
+          done
+          ls -lh "$IB_NAME"
 
-          echo "===== 关键配置 ====="
-          grep -nE 'CONFIG_IB|CONFIG_TARGET_ALL_PROFILES|CONFIG_TARGET_MULTI_PROFILE|DEVICE_panther|DEVICE_nsy|CONFIG_ALL_KMODS|CONFIG_CCACHE' "$CFG" || true
-
-      - name: 生成配置（make defconfig）
-        working-directory: ${{ github.workspace }}/openwrt
+      - name: 解压 ImageBuilder
+        working-directory: /work/build
         run: |
           set -e
-          make defconfig
-          grep -q '^CONFIG_IB=y' .config || { echo "::error::CONFIG_IB 未生效"; exit 1; }
-          echo "--- 目标设备 ---"
-          grep 'DEVICE_panther\|DEVICE_nsy' .config || true
-          echo "--- 选中设备数（应为 2）---"
-          grep -c '^CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_.*=y' .config || true
+          VER="${{ github.event.inputs.openwrt_ver }}"
+          BOARD="${{ github.event.inputs.target_board }}"
+          SUB="${{ github.event.inputs.target_subtarget }}"
+          IB_NAME="openwrt-imagebuilder-${VER}-${BOARD}-${SUB}.Linux-x86_64.tar.zst"
+          tar -xf "$IB_NAME" -C /work/ib --strip-components=1
+          rm -f "$IB_NAME"
+          ls /work/ib/
 
-      - name: 下载软件包（官方源，并发，失败补漏）
-        working-directory: ${{ github.workspace }}/openwrt
+      - name: 注入 DTS 与 legacy.mk 设备定义
+        if: ${{ github.event.inputs.add_devices == 'true' }}
         run: |
           set -e
-          make download -j8 || true
-          make download -j1 V=s || true
+          IB=/work/ib
+          SR="$GITHUB_WORKSPACE/selfrepo"
+          DTS_DIR="$IB/target/linux/rockchip/dts/rk3568"
+          LEGACY_MK="$IB/target/linux/rockchip/image/legacy.mk"
+          mkdir -p "$DTS_DIR"
+          test -f "$LEGACY_MK" || { echo "::error::$LEGACY_MK 不存在"; exit 1; }
+          cp -f "$SR/configfiles/dts/rk3568/rk3566-panther-x2.dts" "$DTS_DIR/"
+          cp -f "$SR/configfiles/dts/rk3568/rk3568-nsy-g68-plus.dts" "$DTS_DIR/"
+          python3 /work/scripts/append_devices.py "$LEGACY_MK"
+          tail -25 "$LEGACY_MK"
 
-      - name: 编译工具链与目标
-        working-directory: ${{ github.workspace }}/openwrt
+      - name: 注入 02_network 网口映射
+        if: ${{ github.event.inputs.add_devices == 'true' }}
         run: |
           set -e
-          J=$(nproc)
-          echo "并行度 -j$J"
-          if ! make tools/install toolchain/install target/linux/install -j"$J"; then
-            echo "::warning::并行编译失败，回退单线程以暴露真实错误"
-            make tools/install toolchain/install target/linux/install -j1 V=s
+          IB=/work/ib
+          NET="$IB/target/linux/rockchip/armv8/base-files/etc/board.d/02_network"
+          test -f "$NET" || { echo "::error::02_network 不存在：$NET"; exit 1; }
+          python3 /work/scripts/inject_network.py "$NET"
+          grep -B1 -A3 'nsy,g68-plus' "$NET"
+
+      - name: 注入 mt7916 eeprom 固件
+        if: ${{ github.event.inputs.add_devices == 'true' }}
+        run: |
+          set -e
+          mkdir -p /work/ib/files/lib/firmware/mediatek
+          cp -f "$GITHUB_WORKSPACE/selfrepo/configfiles/nsy-g68-plus/mt7916_eeprom.bin" /work/ib/files/lib/firmware/mediatek/
+          ls -l /work/ib/files/lib/firmware/mediatek/
+
+      - name: 尝试拉取 iStoreOS 同版 kmod（mt76 / rtl8365mb）
+        if: ${{ github.event.inputs.add_devices == 'true' && github.event.inputs.try_patched_kmod == 'true' }}
+        run: |
+          /work/scripts/dl_kmod.sh /work/ib "${{ github.event.inputs.istoreos_ver }}"
+
+      - name: 替换 repositories.conf 为 iStoreOS 官方 apk 源
+        run: |
+          set -e
+          cp /work/ib/repositories.conf /work/ib/repositories.conf.openwrt.bak
+          python3 /work/scripts/write_repos.py \
+            /work/ib/repositories.conf \
+            "${{ github.event.inputs.istoreos_ver }}" \
+            "aarch64_generic"
+          echo "=== 新 repositories.conf ==="
+          cat /work/ib/repositories.conf
+
+      - name: 预置 iStore 核心应用
+        run: |
+          set -e
+          TD=/work/ib/include/target-defaults.mk
+          if [ -f "$TD" ]; then
+            if ! grep -q 'luci-app-store' "$TD"; then
+              sed -i '/^DEFAULT_PACKAGES[[:space:]]*+=/ s/$/ luci-app-store luci-i18n-store-zh-cn luci-compat/' "$TD"
+            fi
           fi
+          echo "DEFAULT_PACKAGES 预置完成"
+          grep 'DEFAULT_PACKAGES' "$TD" | head -3 || true
 
-      - name: 打包 ImageBuilder
-        working-directory: ${{ github.workspace }}/openwrt
+      - name: 清理缓存并自检 profile
+        if: ${{ github.event.inputs.add_devices == 'true' }}
+        working-directory: /work/ib
+        run: |
+          rm -rf tmp 2>/dev/null || true
+          sudo apt-get update -qq >/dev/null 2>&1
+          sudo apt-get install -y -qq --no-install-recommends \
+            build-essential gawk unzip libncurses-dev zlib1g-dev python3 file wget \
+            xsltproc git ca-certificates python3-pyelftools >/dev/null 2>&1 || true
+          echo "=== make info 探测两设备 ==="
+          make info 2>&1 | grep -E "panther-panther-x2|nsy-g68-plus" || \
+            echo "::warning::make info 未显示两设备（DTS 模板依赖可能需 make 阶段解析，不阻断打包）"
+
+      - name: 重新打包 ImageBuilder
+        working-directory: /work
         run: |
           set -e
-          make target/imagebuilder/compile -j1 V=s 2>&1 | tee /tmp/ib-build.log
-          echo "===== bin/targets 下 IB 相关产物 ====="
-          find bin/targets -iname '*imagebuilder*' | sort || true
+          VER="${{ github.event.inputs.openwrt_ver }}"
+          IVER="${{ github.event.inputs.istoreos_ver }}"
+          STAMP="$(date +%Y%m%d%H%M)"
+          OUT_NAME="istoreos-imagebuilder-${IVER}-pantherx2-g68plus-${STAMP}.Linux-x86_64"
+          mv ib "$OUT_NAME"
+          tar --zstd -cf "${OUT_NAME}.tar.zst" "$OUT_NAME"
+          sha256sum "${OUT_NAME}.tar.zst" > "${OUT_NAME}.tar.zst.sha256"
+          cat "${OUT_NAME}.tar.zst.sha256"
+          mkdir -p /work/out
+          mv "${OUT_NAME}.tar.zst" "${OUT_NAME}.tar.zst.sha256" /work/out/
+          ls -lh /work/out/
 
-      - name: 收集并规整 IB 产物
-        id: collect
-        run: |
-          set -e
-          cd "$GITHUB_WORKSPACE/openwrt"
-          DEST="$GITHUB_WORKSPACE/out"
-          mkdir -p "$DEST"
-          # 兼容 .tar.zst（25.12）与 .tar.xz（老版本）
-          IB=$(find bin/targets -type f \
-                 \( -name '*-imagebuilder-*.tar.zst' -o -name '*-imagebuilder-*.tar.xz' \) \
-               | sort | head -n1)
-          if [ -z "$IB" ]; then
-            echo "::error::未找到 ImageBuilder 压缩包，以下为 bin/targets 内容："
-            find bin/targets -maxdepth 3 -type f | head -50
-            exit 1
-          fi
-          echo "原生产物：$IB"
-          cp -f "$IB" "$DEST/iStoreOS-imagebuilder-rockchip-armv8.Linux-x86_64.tar.zst"
-          echo "file=$DEST/iStoreOS-imagebuilder-rockchip-armv8.Linux-x86_64.tar.zst" >> "$GITHUB_OUTPUT"
-          echo "origin=$(basename "$IB")" >> "$GITHUB_OUTPUT"
-          git log -1 --pretty=format:'%H' > "$DEST/SOURCE_REVISION.txt" || true
-          ls -lh "$DEST"
-
-      - name: 写入构建摘要
-        if: always()
-        run: |
-          {
-            echo "## ImageBuilder 构建结果"
-            echo ""
-            echo "- 上游仓库：\`${{ inputs.source_repo }}\`"
-            echo "- 源码分支：\`${{ inputs.source_branch }}\`"
-            echo "- 注入设备：\`${{ inputs.add_devices }}\`"
-            echo "- STANDALONE：\`${{ inputs.ib_standalone }}\`"
-            echo "- 插件/软件包：官方默认（armv8/.config）"
-            echo "- 源站：全部官方（未替换任何镜像）"
-            echo "- 产物原名：\`${{ steps.collect.outputs.origin }}\`"
-            echo ""
-            echo "> 该 IB 已包含 panther_panther-x2、nsy_g68-plus，可直接用于「Build Firmware With ImageBuilder」。"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: 上传 IB 为 Artifact
-        if: ${{ success() }}
+      - name: 上传 ImageBuilder 为 Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: iStoreOS-ImageBuilder-rockchip-armv8
-          path: out/*
-          compression-level: 0
+          name: iStoreOS-ImageBuilder-${{ github.event.inputs.target_board }}-${{ github.event.inputs.target_subtarget }}
+          path: /work/out/*
           retention-days: 30
-          if-no-files-found: error
+          compression-level: 0
 
-      - name: 发布到 Release（可选）
-        if: ${{ inputs.upload_release }}
+      - name: 发布到 Release
+        if: ${{ github.event.inputs.release_tag != '' }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ib-${{ github.run_number }}
-          name: ImageBuilder rockchip-armv8 (build ${{ github.run_number }})
-          files: out/*
-          draft: false
-          prerelease: true
+          tag_name: ${{ github.event.inputs.release_tag }}
+          name: "iStoreOS ImageBuilder - panther-x2 / G68-PLUS"
+          prerelease: false
+          files: /work/out/*
+          body: |
+            ## iStoreOS ImageBuilder（基于 OpenWrt ${{ github.event.inputs.openwrt_ver }}）
+            - 目标平台：rockchip / armv8
+            - 集成设备：panther-panther-x2、nsy-g68-plus
+            - 插件源：iStoreOS 官方 apk 源（dl.istoreos.com）
+            - 内置 iStore 应用商店
