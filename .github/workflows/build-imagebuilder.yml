@@ -6,9 +6,12 @@ name: Build Firmware With ImageBuilder
 # 前置：必须先跑过「Make iStoreOS ImageBuilder」（工作流一），且其中开启了
 #       「注入设备」。IB 只认编译时存在的 profile，未注入则 PROFILE 不存在。
 #
+# 源站口径：全程使用官方源，不做任何镜像替换。IB 解压后自带的 repositories.conf
+#       即官方软件源，保持原样；不修改下载/软件源地址。
+#
 # Profile 名说明（易错）：
 #   IB 的 PROFILE 使用 Device 全名（下划线形式），不是设备简称。
-#   本仓库 configfiles/config_data-6.x.txt 中即为：
+#   本仓库 configfiles/config_data-6.x.txt 与 armv8/.config 中即为：
 #     CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_panther_panther-x2=y
 #     CONFIG_TARGET_DEVICE_rockchip_armv8_DEVICE_nsy_g68-plus=y
 #   对应 make image PROFILE=panther-panther-x2 / nsy-g68-plus
@@ -35,12 +38,12 @@ on:
         default: ''
         type: string
       profiles:
-        description: '要打包的 Profile（逗号分隔，留空=按 make info 自动探测两个设备）'
+        description: '要打包的 Profile（逗号或空格分隔，留空=按 make info 自动探测两个设备）'
         required: false
         default: ''
         type: string
       extra_packages:
-        description: '追加/剔除软件包（空格分隔，前缀 - 表示剔除）'
+        description: '追加/剔除软件包（空格分隔，前缀 - 表示剔除；留空=完全按 IB 默认）'
         required: false
         default: ''
         type: string
@@ -77,7 +80,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            gawk gettext libncurses5-dev zlib1g-dev \
+            gawk gettext libncurses-dev zlib1g-dev \
             libssl-dev python3 python3-setuptools rsync unzip file wget curl \
             zstd gzip xz-utils libelf-dev
 
@@ -114,7 +117,7 @@ jobs:
             *.tar.zst) tar --zstd -xf "$ARCHIVE" ;;
             *)         tar -xf "$ARCHIVE" ;;
           esac
-          # IB 解压后目录名形如 openwrt-imagebuilder-...Linux-x86_64
+          # IB 解压后目录名形如 iStoreOS-imagebuilder-...Linux-x86_64
           IBDIR=$(find . -maxdepth 1 -type d -name '*imagebuilder*' | head -n1)
           [ -z "$IBDIR" ] && IBDIR="."
           echo "ibdir=$PWD/$IBDIR" >> "$GITHUB_OUTPUT"
@@ -131,12 +134,12 @@ jobs:
           grep -iE 'panther|g68|nsy' /tmp/ib-info.txt || true
 
           # 解析用户输入；留空则自动探测
-          PROFILES="${{ inputs.profiles }}"
-          if [ -z "$PROFILES" ]; then
+          PROFILES=$(echo "${{ inputs.profiles }}" | tr ',' ' ')
+          if [ -z "$(echo "$PROFILES" | xargs)" ]; then
             PROFILES=""
-            grep -qi 'panther*_*panther-x2\|panther-panther-x2' /tmp/ib-info.txt \
+            grep -qi 'panther[-_]*x2' /tmp/ib-info.txt \
               && PROFILES="$PROFILES panther-panther-x2"
-            grep -qi 'nsy_g68-plus\|nsy-g68-plus' /tmp/ib-info.txt \
+            grep -qi 'nsy[-_]*g68' /tmp/ib-info.txt \
               && PROFILES="$PROFILES nsy-g68-plus"
             PROFILES=$(echo "$PROFILES" | xargs)
           fi
@@ -149,14 +152,13 @@ jobs:
           echo "将打包：$PROFILES"
           echo "profiles=$PROFILES" >> "$GITHUB_OUTPUT"
 
-      - name: 更换 IB 软件源为国内镜像
+      - name: 核对 IB 软件源（保持官方，不做替换）
         run: |
           set -e
           cd "${{ steps.unpack.outputs.ibdir }}"
           if [ -f repositories.conf ]; then
-            sed -i 's#https\?://downloads.openwrt.org#https://mirrors.tuna.tsinghua.edu.cn/openwrt#g' repositories.conf
-            echo "repositories.conf 已替换为清华源"
-            grep -E '^(src|# src)' repositories.conf | head -10 || true
+            echo "===== 当前 IB 软件源（官方默认，保持原样）====="
+            grep -E '^(src|# src)' repositories.conf | head -20 || true
           fi
           if ls keys/*.pub >/dev/null 2>&1; then
             echo "已内置签名密钥：$(ls keys | tr '\n' ' ')"
@@ -215,6 +217,7 @@ jobs:
             echo "- ImageBuilder 来源：\`${{ inputs.ib_source }}\`"
             echo "- 打包 Profile：\`${{ steps.probe.outputs.profiles }}\`"
             echo "- 追/剔软件包：\`${{ inputs.extra_packages }}\`"
+            echo "- 源站：官方默认（未替换任何镜像）"
             echo ""
             echo "### 产物"
             echo '```'
