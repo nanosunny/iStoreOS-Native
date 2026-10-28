@@ -75,7 +75,7 @@ jobs:
       - name: Find and Upload Artifacts
         run: |
           # 查找生成的 ImageBuilder 文件
-          IB_FILE=$(find bin/targets/ -name "iStoreOS-imagebuilder-*.tar.xz" | head -n 1)
+          IB_FILE=$(find bin/targets/ -name "iStoreOS-imagebuilder-*.tar.zst" | head -n 1)
           if [ -z "$IB_FILE" ]; then
             echo "Error: ImageBuilder file not found!"
             exit 1
