@@ -179,24 +179,17 @@ jobs:
 
           # 1) Git 提速：浅层 + 不检出 blobs，显著减小 feeds 克隆体积
           git config --global --add safe.directory '*' || true
-          cat >> "$HOME/.gitconfig" <<'GITEOF'
-[core]
-  compression = 0
-[fetch]
-  parallelism = 0
-GITEOF
+          printf '%s\n' '[core]' '  compression = 0' '[fetch]' '  parallelism = 0' >> "$HOME/.gitconfig"
           # GitHub Actions 的 runner 直连 GitHub 其实很快，所以 feeds 保持官方 URL 不替换，
           # 避免像上版那样指到清华不存在的路径导致 fatal。
 
           # 2) dl 下载源替换为清华 OpenWrt 二进制镜像（这才是清华真正有的东西）
-          cat >> files/repositories.override <<'CONF' 2>/dev/null || true
-# 二进制包源由 IB 内部 repositories.conf 控制，此处不做处理
-CONF
           # 让 OpenWrt 构建系统优先从清华镜像下载 tarball（只影响 dl/，不影响 feeds）
-          cat > .download-sed.sed <<'SEDEOF'
-s#https://downloads.openwrt.org#https://mirrors.tuna.tsinghua.edu.cn/openwrt#g
-s#https://downloads.istoreos.com#https://mirrors.tuna.tsinghua.edu.cn/istoreos#g
-SEDEOF
+          printf '%s\n' \
+            's#https://downloads.openwrt.org#https://mirrors.tuna.tsinghua.edu.cn/openwrt#g' \
+            's#https://downloads.istoreos.com#https://mirrors.tuna.tsinghua.edu.cn/istoreos#g' \
+            > .download-sed.sed
+          : > files/repositories.override 2>/dev/null || true
           echo "下载源替换完成（仅二进制包，feeds 走 GitHub 直连）"
           cat feeds.conf 2>/dev/null || cat feeds.conf.default
 
