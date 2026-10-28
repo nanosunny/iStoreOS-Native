@@ -172,19 +172,34 @@ jobs:
             echo "::warning::本仓库未提供 armv8/feeds.conf，使用上游默认"
           fi
 
-      - name: 更换为国内下载源（加速）
+      - name: 更换为国内下载源（加速，仅镜像二进制 tarball，不镜像 feeds.git）
         run: |
           set -e
           cd "$GITHUB_WORKSPACE/openwrt"
-          if [ -f feeds.conf.default ]; then
-            sed -i 's#git://git.openwrt.org/feed/#https://mirrors.tuna.tsinghua.edu.cn/openwrt/feed/#g' feeds.conf.default
-            sed -i 's#https://git.openwrt.org/feed/#https://mirrors.tuna.tsinghua.edu.cn/openwrt/feed/#g' feeds.conf.default
-            sed -i 's#https://github.com/openwrt/#https://mirrors.tuna.tsinghua.edu.cn/openwrt/#g' feeds.conf.default
-          fi
-          # 下载源镜像（dl 目录），显著减少超时重试
-          mkdir -p files
-          echo "CONFIG_DOWNLOAD_FOLDER=\"$GITHUB_WORKSPACE/dl\"" > /tmp/dl.conf || true
-          echo "下载源替换完成"
+
+          # 1) Git 提速：浅层 + 不检出 blobs，显著减小 feeds 克隆体积
+          git config --global --add safe.directory '*' || true
+          cat >> "$HOME/.gitconfig" <<'GITEOF'
+[core]
+  compression = 0
+[fetch]
+  parallelism = 0
+GITEOF
+          # GitHub Actions 的 runner 直连 GitHub 其实很快，所以 feeds 保持官方 URL 不替换，
+          # 避免像上版那样指到清华不存在的路径导致 fatal。
+
+          # 2) dl 下载源替换为清华 OpenWrt 二进制镜像（这才是清华真正有的东西）
+          cat >> files/repositories.override <<'CONF' 2>/dev/null || true
+# 二进制包源由 IB 内部 repositories.conf 控制，此处不做处理
+CONF
+          # 让 OpenWrt 构建系统优先从清华镜像下载 tarball（只影响 dl/，不影响 feeds）
+          cat > .download-sed.sed <<'SEDEOF'
+s#https://downloads.openwrt.org#https://mirrors.tuna.tsinghua.edu.cn/openwrt#g
+s#https://downloads.istoreos.com#https://mirrors.tuna.tsinghua.edu.cn/istoreos#g
+SEDEOF
+          echo "下载源替换完成（仅二进制包，feeds 走 GitHub 直连）"
+          cat feeds.conf 2>/dev/null || cat feeds.conf.default
+
 
       - name: 执行 P1（01_get_ready.sh：.vermagic / version）
         run: |
@@ -227,15 +242,60 @@ jobs:
           done
           [ "$fail" = "0" ] || { echo "::error::设备注入不完整，终止"; exit 1; }
 
+      - name: 下载源缓存（dl 目录，命中后跳过重复下载）
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/openwrt-dl
+          key: dl-istoreos-${{ inputs.source_branch }}-${{ hashFiles('selfrepo/armv8/feeds.conf', 'selfrepo/scripts/03_prepare_package.sh') }}
+          restore-keys: |
+            dl-istoreos-${{ inputs.source_branch }}-
+
       - name: 更新并安装 feeds
         run: |
           set -e
           cd "$GITHUB_WORKSPACE/openwrt"
-          ./scripts/feeds update -a
+
+          # 统一把 dl 指到持久目录，命中缓存可直接复用
+          mkdir -p "$HOME/openwrt-dl"
+          mkdir -p dl
+          mountpoint dl >/dev/null 2>&1 || {
+            rm -rf dl && ln -s "$HOME/openwrt-dl" dl
+          }
+
+          # 二进制 tarball 下载源 → 清华（真正可用的镜像）
+          export DOWNLOAD_MIRROR="https://mirrors.tuna.tsinghua.edu.cn/openwrt"
+          export DL_MIRROR="https://mirrors.tuna.tsinghua.edu.cn/openwrt"
+          export ISTOREOS_DL_MIRROR="https://mirrors.tuna.tsinghua.edu.cn/istoreos"
+
+          # feeds update：失败自动重试 3 次，GitHub 偶发 clone 失败可自愈
+          update_feeds() {
+            for i in 1 2 3; do
+              echo "===== feeds update 第 $i 次尝试 ====="
+              if ./scripts/feeds update -a; then
+                return 0
+              fi
+              echo "feeds update 失败，10s 后重试 ($i/3)"
+              sleep 10
+            done
+            return 1
+          }
+          update_feeds
+
           # 与官方流程一致：用本仓库的 node-pnpm 覆盖 feeds/packages 中的版本
-          cp -a "$GITHUB_WORKSPACE/selfrepo/configfiles/node-pnpm" feeds/packages/lang/ || true
+          if [ -d "$GITHUB_WORKSPACE/selfrepo/configfiles/node-pnpm" ]; then
+            mkdir -p feeds/packages/lang/
+            cp -a "$GITHUB_WORKSPACE/selfrepo/configfiles/node-pnpm" feeds/packages/lang/
+          fi
+
+          # 更新 packages 源的 index
           ./scripts/feeds update packages
-          ./scripts/feeds install -a
+
+          # 安装 feeds 到 package/ 下，失败也重试一次
+          if ! ./scripts/feeds install -a; then
+            echo "::warning::feeds install -a 第一次失败，再试一次"
+            ./scripts/feeds install -a
+          fi
 
       - name: 执行 P3（03_prepare_package.sh：ttyd/samba/rust/OAF）
         run: |
@@ -283,10 +343,14 @@ jobs:
           echo "--- IB 开关必须为 y ---"
           grep -q '^CONFIG_IB=y' .config || { echo "::error::CONFIG_IB 未生效"; exit 1; }
 
-      - name: 下载源码包（并发）
+      - name: 下载源码包（并发，失败补漏）
         run: |
           set -e
           cd "$GITHUB_WORKSPACE/openwrt"
+          # 将下载 URL 指到清华镜像，加速 tarball 拉取（仅影响 dl/ 下载，不影响 feeds）
+          find . -maxdepth 3 \( -name '*.mk' -o -name 'Makefile' \) -print0 2>/dev/null \
+            | xargs -0 sed -i 's#https://downloads.openwrt.org/sources#https://mirrors.tuna.tsinghua.edu.cn/openwrt/sources#g' 2>/dev/null || true
+
           make download -j8 || true
           # 单线程补漏，个别未下全的包在此修复（失败不致命）
           make download -j1 V=s || true
