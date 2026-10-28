@@ -1,4 +1,4 @@
-name: Build iStoreOS ImageBuilder
+name: old-Build iStoreOS ImageBuilder
 
 on:
   workflow_dispatch:
