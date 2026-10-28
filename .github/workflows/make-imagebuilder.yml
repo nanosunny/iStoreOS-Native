@@ -25,7 +25,7 @@ on:
       source_branch:
         description: '上游源码分支（要编译的目标分支）'
         required: true
-        default: 'istoreos-24.10'
+        default: 'istoreos-25.12'
         type: string
       add_devices:
         description: '是否注入 panther-x2 / g68-plus 设备与补丁'
